@@ -7,8 +7,8 @@ const emit = defineEmits<{ change: [string, string | number] }>();
   <section class="panel">
     <h3>Camera controls</h3>
     <p v-if="!controls.length" class="small muted">
-      This camera/browser doesn’t expose adjustable controls. Physical lens adjustments still work;
-      other settings may require the camera’s own software.
+      No adjustable controls are available in this browser. Use the camera’s software or physical
+      controls.
     </p>
     <div v-for="control in controls" :key="control.key" class="camera-control">
       <label v-if="control.choices"
@@ -45,8 +45,8 @@ const emit = defineEmits<{ change: [string, string | number] }>();
           @change="emit('change', control.key, Number(($event.target as HTMLInputElement).value))"
       /></label>
     </div>
-    <p class="small muted">
-      Only controls reported by your camera are shown. Shutter and focus sliders require manual
+    <p v-if="controls.length" class="small muted">
+      Available controls depend on the camera and browser. Shutter and focus sliders require manual
       mode.
     </p>
   </section>

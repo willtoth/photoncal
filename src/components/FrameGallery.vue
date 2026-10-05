@@ -30,7 +30,7 @@ const errors = computed(
   <section class="panel gallery">
     <div class="panel-heading">
       <h3>
-        Captured images <span class="count">{{ session.frames.length }}</span>
+        Images <span class="count">{{ session.frames.length }}</span>
       </h3>
       <span class="small muted"
         >{{ session.frames.filter((f) => f.included).length }} included</span
@@ -40,9 +40,7 @@ const errors = computed(
         <option value="error">Largest error first</option>
       </select>
     </div>
-    <p v-if="!session.frames.length" class="empty-gallery">
-      Your accepted captures will appear here. Every image stays on this computer.
-    </p>
+    <p v-if="!session.frames.length" class="empty-gallery">No images captured yet.</p>
     <div v-else class="gallery-grid">
       <FrameThumb
         v-for="(frame, i) in visible"

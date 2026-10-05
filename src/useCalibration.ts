@@ -289,8 +289,7 @@ export function useCalibration() {
   function setStep(value: number) {
     if (working.value) return;
     if (value === 1 && session.value.source === 'import') {
-      notice.value =
-        'Imported images must already be focused at fixed lens settings. Continue with Capture to analyze them.';
+      notice.value = 'Imported images must use fixed focus and zoom. Open Capture to analyze them.';
       return;
     }
     if (value === 1 && !connected.value && session.value.source !== 'import') {
@@ -307,7 +306,7 @@ export function useCalibration() {
       return;
     }
     if (value === 3 && !session.value.result) {
-      notice.value = 'Capture at least 12 useful images, then run calibration.';
+      notice.value = 'Capture at least 12 images, then calibrate.';
       return;
     }
     auto.value = false;
@@ -392,7 +391,7 @@ export function useCalibration() {
     try {
       for (let i = 0; i < pendingImports.value.length; i++) {
         const file = pendingImports.value[i]!;
-        progress.value = `Detecting image ${i + 1} of ${pendingImports.value.length}`;
+        progress.value = `Analyzing image ${i + 1} of ${pendingImports.value.length}`;
         try {
           const bitmap = await createImageBitmap(file);
           if (bitmap.width !== session.value.width || bitmap.height !== session.value.height) {
@@ -441,7 +440,7 @@ export function useCalibration() {
     working.value = true;
     auto.value = false;
     error.value = '';
-    progress.value = 'Preparing the calibration…';
+    progress.value = 'Preparing calibration…';
     const operation = ++operationGeneration;
     const revision = session.value.revision,
       request = solveRequest(session.value);
@@ -503,14 +502,14 @@ export function useCalibration() {
         );
       const results: CalibrationResult[] = [];
       for (let i = 0; i < 2; i++) {
-        progress.value = `Solving independent subset ${i + 1} of 2…`;
+        progress.value = `Calibrating image set ${i + 1} of 2…`;
         const r = await solver.call<CalibrationResult>('solve', datasets[i]);
-        progress.value = `Estimating uncertainty for subset ${i + 1}…`;
+        progress.value = `Estimating uncertainty for image set ${i + 1}…`;
         r.uncertainty = await solver.call<Grid>('uncertainty', { ...datasets[i], result: r });
         results.push(r);
         if (operation !== operationGeneration) return;
       }
-      progress.value = 'Comparing independently fitted projections…';
+      progress.value = 'Comparing projections…';
       const comparison = await solver.call<Grid & { mean: number; p95: number }>('compare', {
         width: request.width,
         height: request.height,

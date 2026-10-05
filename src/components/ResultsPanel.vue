@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import type { Session } from '../core/types';
 import { currentResult } from '../core/types';
 import { coverage } from '../core/capture';
-import { Download, Archive, ScanLine, AlertTriangle, CircleCheck } from 'lucide-vue-next';
+import { Download, Archive, ScanLine, AlertTriangle } from 'lucide-vue-next';
 import DiagnosticPlot from './DiagnosticPlot.vue';
 const props = defineProps<{ session: Session; working: boolean }>();
 const emit = defineEmits<{
@@ -24,13 +24,10 @@ const outlierRate = computed(() =>
 const issues = computed(() => {
   const messages: string[] = [];
   if (!result.value) return messages;
-  if (!fresh.value)
-    messages.push(
-      'The image selection changed. Recalibrate to update these results and enable export.',
-    );
+  if (!fresh.value) messages.push('Images or settings changed. Recalibrate before exporting.');
   if (result.value.rms > 1)
     messages.push(
-      'Reprojection RMS exceeds 1 pixel. Inspect the worst images and check the target configuration.',
+      'Reprojection RMS exceeds 1 pixel. Review images with the largest errors and check the board settings.',
     );
   if (outlierRate.value > 3)
     messages.push(
@@ -42,7 +39,7 @@ const issues = computed(() => {
     );
   if (!result.value.uncertainty)
     messages.push(
-      'Uncertainty is not available yet. Reprojection error alone cannot establish calibration quality.',
+      'Uncertainty is unavailable. Reprojection error alone does not establish accuracy.',
     );
   return messages;
 });
@@ -56,24 +53,11 @@ const uncertainty95 = computed(() => {
 <template>
   <div v-if="result" class="results">
     <div class="result-banner" :class="{ warning: issues.length }">
-      <component :is="issues.length ? AlertTriangle : CircleCheck" :size="27" />
+      <AlertTriangle v-if="issues.length" :size="22" />
       <div>
         <h2>
-          {{
-            !fresh
-              ? 'Results need updating'
-              : issues.length
-                ? 'Calibration complete · review findings'
-                : 'Calibration complete'
-          }}
+          {{ !fresh ? 'Results need updating' : 'Calibration complete' }}
         </h2>
-        <p>
-          {{
-            issues.length
-              ? 'Review the findings below before using this calibration.'
-              : 'Inspect residual patterns and uncertainty before using the calibration.'
-          }}
-        </p>
       </div>
       <span class="model-label">mrcal / OpenCV8</span>
     </div>
@@ -115,8 +99,8 @@ const uncertainty95 = computed(() => {
           {{ result.uncertaintyError || 'Computing uncertainty…' }}
         </div>
         <p class="small muted">
-          Expected projection variation from corner-detection noise. A low value does not rule out
-          the wrong lens model, board deformation, or systematic errors.
+          Estimated projection variation from corner-detection noise. This excludes systematic
+          errors such as board deformation or a poor lens model.
         </p>
       </section>
       <section class="panel">
@@ -134,15 +118,15 @@ const uncertainty95 = computed(() => {
           :mode="mode"
         />
         <p class="small muted">
-          Look for random small errors. Coherent patterns can point to lens-model limitations, a
-          warped target, motion blur, or inaccurate corner detection.
+          Errors should be small and scattered. Patterns can indicate a poor lens model, a warped
+          board, motion blur, or inaccurate corner detection.
         </p>
       </section>
     </div>
     <div class="diagnostic-grid">
       <section class="panel">
         <div class="panel-heading">
-          <h3>Independent-subset check</h3>
+          <h3>Subset comparison</h3>
           <button
             class="button small-button"
             :disabled="working || !fresh || session.frames.filter((f) => f.included).length < 24"
@@ -163,13 +147,12 @@ const uncertainty95 = computed(() => {
           </p></template
         >
         <p v-else class="muted">
-          Fit alternating images independently, then compare their projections. Each subset needs
-          varied angles and good coverage. Requires at least 24 images and two extra solves.
+          Calibrate two sets of alternating images and compare their projections. Requires at least
+          24 images, varied angles and coverage in each set, and two extra solves.
         </p>
         <p v-if="result.consistencyError" class="error-text">{{ result.consistencyError }}</p>
         <p class="small muted">
-          Agreement is a consistency check, not proof of accuracy: both subsets can share the same
-          systematic error.
+          Both sets can share the same systematic error, even when their results agree.
         </p>
       </section>
       <section class="panel">
@@ -233,14 +216,14 @@ const uncertainty95 = computed(() => {
     </div>
     <section class="export-panel">
       <div>
-        <h3>Ready for PhotonVision</h3>
+        <h3>Export calibration</h3>
         <p>
-          Import the JSON for this camera at exactly {{ session.width }} × {{ session.height }}.
-          Keep its focus and zoom unchanged.
+          Use this JSON in PhotonVision with the same camera at {{ session.width }} ×
+          {{ session.height }}, with focus and zoom unchanged.
         </p>
         <p class="small muted">
-          The JSON contains calibration parameters. Save a session archive to keep your images,
-          observations, and diagnostics.
+          JSON contains calibration parameters. The session archive also includes images and
+          diagnostics.
         </p>
       </div>
       <div class="export-buttons">

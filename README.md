@@ -1,6 +1,6 @@
 # PhotonCal
 
-A private, browser-only calibration lab for PhotonVision. The actual **mrcal C/C++ solver** and OpenCV detector run in WebAssembly workers; there is no calibration server, image upload, telemetry, CDN dependency, or connection to a running PhotonVision instance.
+Camera calibration for PhotonVision, running in your browser. PhotonCal uses mrcal to solve calibrations and OpenCV to detect boards. Images and calibration data stay on your device; the app needs no calibration server or connection to PhotonVision.
 
 ## Run
 
@@ -15,18 +15,24 @@ Camera access requires **localhost or HTTPS**. An ordinary HTTP LAN address will
 
 ## Workflow
 
-1. **Camera:** choose the physical device and exact resolution. View its delivered settings and adjust only controls exposed by the browser/driver. Resizing is explicitly disabled when supported. Missing controls are identified; the app cannot bypass the browser to access arbitrary UVC controls.
-2. **Focus:** focus at the intended working distance, under steady light and exposure. Click the preview or select center/corner regions to compare live full-resolution gradient sharpness, its recent history, and the best score seen. This is a relative adjustment aid, not MTF or a universal pass/fail score. Secure the lens, fix zoom, and disable autofocus before continuing. A manual focus mode is requested when available.
-3. **Capture:** configure the measured board, then move it through large, tilted views across the image, including edges/corners. Enable automatic capture: it requires a valid detection, at least five distinct analyzed frames and 250 ms of stability, with a 100 ms post-capture cooldown and duplicate-view suppression. Both displacement and fitted corner speed are checked; the speed cap is 2 pixels/second at 640px width, scaled with resolution. Slow analysis or detected movement can extend the wait. These are motion heuristics, not a guarantee against exposure blur or rolling-shutter distortion. Full-resolution detection is repeated on the exact retained frame before saving. Manual capture/Space is also available. Captured-corner dots, a view-count coverage grid, and guidance show neglected regions.
-4. **Results:** solve with mrcal OpenCV8, then inspect per-image errors/outliers, residual magnitude/direction, undistorted previews, and a projection-uncertainty map. With 24+ images, an optional independently fitted alternating-subset comparison is available. Download the PhotonVision JSON and a separate ZIP session archive.
+1. **Camera:** select the device and resolution you’ll use in PhotonVision. Connect to check the active resolution and adjust the available controls.
+2. **Focus:** focus at your working distance with steady light and exposure. Click the preview or choose a center/corner region to compare sharpness scores. Secure the lens, fix zoom, and disable autofocus before continuing.
+3. **Capture:** enter the measured board settings. Capture large, tilted views at different positions and distances, including the image edges and corners. Automatic capture saves new views when the board is still; **Capture now** or Space saves manually. Use the coverage grid to find areas that need more views.
+4. **Results:** calibrate, then inspect per-image errors, outliers, residuals, undistorted previews, and projection uncertainty. With at least 24 images, you can compare calibrations from two image subsets. Download the PhotonVision JSON and a ZIP session archive.
 
-Twelve usable views unlock a solve; this is a minimum, not a quality guarantee. Aim for roughly **100 useful, varied views** and use diagnostics to decide when there is sufficient data. The engine accepts up to 5,000 views subject to device memory/storage; the tested large case is 300 views, not a guarantee for every camera or device.
+Calibration requires 12 usable images. Aim for about 100 varied views, then use coverage and diagnostics to decide whether to add more. The engine accepts up to 5,000 views within device memory and storage limits; tests cover up to 300 views.
+
+### Camera and capture behavior
+
+Camera controls depend on the browser and driver. The app reports unavailable controls and requests unresized images where supported. The focus score compares full-resolution gradient sharpness, with recent history and a best score. It measures relative changes under a fixed scene and exposure, not MTF or an absolute quality threshold. Confirming focus requests manual focus mode when available.
+
+Automatic capture requires a valid board detection, at least five analyzed frames, and 250 ms of stability. It checks displacement and fitted corner speed, with a speed limit of 2 pixels/second at 640px width, scaled with resolution. After capture, a 100 ms cooldown and duplicate-view check prevent repeated saves of the same view. Slow analysis or movement can extend the wait. The saved frame is checked again at full resolution. These checks cannot guarantee freedom from exposure blur or rolling-shutter distortion.
 
 ### Targets and image imports
 
 - ChArUco (including partial observations) and full chessboards are supported. Dimensions count **squares**, not internal corners. Default: 8×8 ChArUco, 25.4 mm squares, 19.05 mm markers, `DICT_4X4_1000`, modern pattern.
 - Match dictionary, marker size and legacy-pattern setting to the actual printed board. Print target downloads a locally generated, physically sized HTML document; open it and print at **100% / actual size**, or use the browser's Save as PDF. Measure the result and enter actual sizes. Use sufficiently large paper and a flat, rigid backing.
-- Use saved images from one camera, sensor mode, focus and zoom. Confirm the target settings before analysis. Mismatched dimensions and insufficient detections are reported and skipped. No images are sent anywhere.
+- Use saved images from one camera, sensor mode, focus and zoom. Confirm the target settings before analysis. Mismatched dimensions and insufficient detections are reported and skipped.
 - Do not refocus between close-up and distant board positions. Avoid severe defocus, glare, clipping, motion blur, and flexible targets. Moderate close-up softness is not automatically rejected: that would discard valuable close-range observations.
 
 ### Saving and recovery
@@ -49,7 +55,7 @@ The export matches `CameraCalibrationCoefficients` in the sibling PhotonVision s
 | `calobjectSpacing`, `calobjectWarp`  | Meters                                         |
 | `observations`, `optimizationInputs` | `[]`, `null`                                   |
 
-The last two fields intentionally omit PhotonVision server-local snapshot paths and optimization state. This is a **portable coefficient import**, not a restoration of PhotonVision's calibration gallery/uncertainty UI. The separate PhotonCal archive retains the richer data. Import the JSON into PhotonVision's calibration UI for the same camera and exact mode. Nothing here writes to PhotonVision itself.
+The export omits PhotonVision snapshot paths and optimization state, so importing it restores calibration coefficients only. Use a PhotonCal archive to retain images and diagnostics. Import the JSON through PhotonVision's calibration UI for the same camera and resolution.
 
 Changing image inclusion invalidates the result and disables export until recalibration. JSON schema/unit/order tests run with the unit suite. An additional offline check passed using the actual **2025 Jackson-based PhotonVision Java importer** in the existing sibling build. That older binary check is separate from the current source-schema review; no current PhotonVision server was launched.
 
@@ -152,3 +158,23 @@ Deployments fetch/cache the pinned native sources, regenerate the full matching 
 - [Edmund Optics: testing and targets](https://www.edmundoptics.com/knowledge-center/application-notes/imaging/testing-and-targets/) informed focus-target and center/edge inspection guidance.
 
 The live focus score, stillness thresholds and coverage prompts are PhotonCal heuristics, not prescribed mrcal quality thresholds. Physical camera controls, lens focusing and final real-world pose accuracy still need a hardware acceptance check with your camera.
+
+## Interface writing
+
+Use these guidelines for UI copy and user documentation:
+
+- Name the task or state directly: “Camera setup” and “Camera not connected.” Avoid slogans such as “A better view starts here.”
+- Label buttons with their action. Keep names consistent across controls, messages, and instructions.
+- Give each instruction once where it helps the next decision. Remove repeated headings, reassurance, and introductions.
+- Keep technical terms that explain a result, such as reprojection RMS and uncertainty. Preserve units, requirements, and limitations that affect calibration decisions.
+- State errors plainly and give a recovery action. Put implementation details in an optional disclosure or developer documentation.
+- Use sentence case and restrained emphasis. Reserve color for actions, state, and diagnostic data; avoid decorative badges and repeated callouts.
+
+For AI-assisted edits, supply these rules and a short example of the desired copy. Review the full screen for repetition and clarity instead of relying on a banned-word list.
+
+Research reviewed on 2026-10-05:
+
+- [OpenAI’s GPT-6 writing guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra#personality-and-writing-style) describes Astra’s tendency toward detailed formatting and recurring phrases, and recommends explicit style and structure instructions.
+- [OpenAI’s guidance on Astra skills and prompts](https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra) recommends keeping instructions concise and relevant to the task.
+- [NN/g on plain language for experts](https://www.nngroup.com/articles/plain-language-experts/) supports direct wording for technical audiences. Its [minimalist design guidance](https://www.nngroup.com/articles/aesthetic-minimalist-design/) explains how unnecessary interface content competes with useful information.
+- [Kobak et al. on excess vocabulary in scientific writing](https://arxiv.org/abs/2406.07016) studies population-level shifts in word use associated with LLMs. Its scope is biomedical abstracts, not GPT-6 interface copy; the editorial rules above are a product choice, not an AI detector.

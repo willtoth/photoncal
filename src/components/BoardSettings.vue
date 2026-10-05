@@ -21,7 +21,7 @@ function update(key: keyof BoardConfig, value: any) {
           :value="modelValue.kind"
           @change="update('kind', ($event.target as HTMLSelectElement).value)"
         >
-          <option value="charuco">ChArUco · recommended</option>
+          <option value="charuco">ChArUco (recommended)</option>
           <option value="chessboard">Chessboard</option>
         </select></label
       >
@@ -106,10 +106,10 @@ function update(key: keyof BoardConfig, value: any) {
     </fieldset>
     <p class="small muted">
       {{ (modelValue.columns - 1) * (modelValue.rows - 1) }} internal corners. Measure the printed
-      target; printer scaling changes its dimensions.
+      target to check its dimensions.
     </p>
     <p v-if="disabled" class="small muted">
-      Target settings are locked after capture. Start another session to use a different board.
+      Target settings are locked after capture. Start a new calibration to change them.
     </p>
   </section>
 </template>

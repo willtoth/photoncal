@@ -11,13 +11,10 @@ import {
   Download,
   FolderOpen,
   Plus,
-  ShieldCheck,
   Usb,
   RefreshCw,
   AlertTriangle,
   X,
-  Pause,
-  Play,
   ImagePlus,
   Move,
   Info,
@@ -97,22 +94,17 @@ const fileInput = ref<HTMLInputElement>(),
   archiveInput = ref<HTMLInputElement>(),
   sessionMenu = ref(false);
 const steps = [
-  { title: 'Camera', subtitle: 'Choose your setup', icon: CameraIcon },
-  { title: 'Focus', subtitle: 'Find the sharpest view', icon: Focus },
-  { title: 'Capture', subtitle: 'Build your dataset', icon: ScanLine },
-  { title: 'Results', subtitle: 'Inspect & export', icon: ChartNoAxesCombined },
+  { title: 'Camera', icon: CameraIcon },
+  { title: 'Focus', icon: Focus },
+  { title: 'Capture', icon: ScanLine },
+  { title: 'Results', icon: ChartNoAxesCombined },
 ];
-const titles = [
-  'Start with your camera.',
-  'Bring every detail into focus.',
-  'Move. Hold. Capture.',
-  'See how your calibration performs.',
-];
+const titles = ['Camera setup', 'Adjust focus', 'Capture images', 'Calibration results'];
 const descriptions = [
-  'Choose the resolution you’ll use in PhotonVision, then adjust your camera’s image.',
-  'Focus at your working distance, check the edges, then lock the lens in place.',
-  'Fill the image with varied views of your board. We’ll capture when you hold it still.',
-  'Inspect coverage, residuals, and uncertainty before downloading your camera model.',
+  'Select your camera and the resolution you’ll use in PhotonVision.',
+  'Focus at your working distance, then check the center and edges.',
+  'Capture the board at different positions, distances, and angles.',
+  'Check coverage, residuals, and uncertainty before exporting.',
 ];
 const resolution = computed({
   get: () => `${session.value.width}x${session.value.height}`,
@@ -198,14 +190,19 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
       <a href="./" class="brand" aria-label="PhotonCal home"
         ><span class="brand-mark"><Aperture :size="25" :stroke-width="1.6" /></span>photon<span
           >cal</span
-        ><span class="brand-tag">CAMERA LAB</span></a
+        ></a
       >
       <div class="topbar-actions">
-        <span class="privacy"><ShieldCheck :size="15" />On your device</span
-        ><button class="header-button" :disabled="working" @click="archiveInput?.click()">
+        <button
+          class="header-button"
+          aria-label="Open archive"
+          :disabled="working"
+          @click="archiveInput?.click()"
+        >
           <FolderOpen :size="16" /><span>Open archive</span></button
         ><button
           class="header-button"
+          aria-label="Save session"
           :disabled="working || archiveProgress !== undefined"
           @click="exportArchive"
         >
@@ -229,7 +226,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
       @change="restored"
     />
     <aside class="sidebar">
-      <div class="sidebar-label">YOUR CALIBRATION</div>
+      <div class="sidebar-label">Calibration</div>
       <nav aria-label="Calibration steps">
         <button
           v-for="(item, index) in steps"
@@ -246,14 +243,13 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               v-else
               :size="19" /></span
           ><span class="step-copy"
-            ><strong>{{ item.title }}</strong
-            ><small>{{ item.subtitle }}</small></span
-          ><span class="step-index">0{{ index + 1 }}</span>
+            ><strong>{{ item.title }}</strong></span
+          ><span class="step-index">{{ index + 1 }}</span>
         </button>
       </nav>
       <div class="sidebar-bottom">
         <div class="session-summary">
-          <span class="sidebar-label">THIS SESSION</span
+          <span class="sidebar-label">Session</span
           ><strong>{{ session.cameraLabel || 'No camera selected' }}</strong
           ><span>{{ session.width }} × {{ session.height }} · {{ included.length }} images</span>
           <div class="mini-progress"><span :style="{ width: coverageData.percent + '%' }" /></div>
@@ -284,12 +280,9 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               }}</small
             >
           </button>
-          <p v-if="!sessions.length" class="small muted">Your sessions will be saved here.</p>
+          <p v-if="!sessions.length" class="small muted">No saved sessions.</p>
         </div>
-        <p class="local-note">
-          Images and calibration data stay in your browser. Save an archive before clearing site
-          data.
-        </p>
+        <p class="local-note">Save a session archive before clearing browser data.</p>
       </div>
     </aside>
     <main class="main-content">
@@ -310,13 +303,10 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
       </div>
       <div class="page-heading">
         <div>
-          <div class="eyebrow">
-            STEP 0{{ step + 1 }} <span>/</span> {{ steps[step]!.title.toUpperCase() }}
-          </div>
           <h1>{{ titles[step] }}</h1>
           <p>{{ descriptions[step] }}</p>
         </div>
-        <div class="engine-pill" :class="engineState">
+        <div class="engine-status" :class="engineState" role="status">
           <span class="status-dot" />{{
             engineState === 'ready'
               ? 'mrcal ready'
@@ -330,10 +320,11 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
         <AlertTriangle :size="20" />
         <div>
           <strong>The calibration engine couldn’t load.</strong>
-          <p>
-            {{ engineError }} If the WASM assets are missing, run
-            <code>npm run build:wasm</code> from the project folder.
-          </p>
+          <p>Check your connection and retry.</p>
+          <details>
+            <summary>Technical details</summary>
+            <p>{{ engineError }}</p>
+          </details>
         </div>
         <button class="button small-button" @click="loadEngine">Retry</button>
       </div>
@@ -369,10 +360,10 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               <span
                 ><span class="live-dot" :class="{ on: connected }" />{{
                   connected
-                    ? 'LIVE VIEW'
+                    ? 'Live view'
                     : session.source === 'import'
-                      ? 'IMAGE DATASET'
-                      : 'CAMERA PREVIEW'
+                      ? 'Imported images'
+                      : 'Camera preview'
                 }}</span
               ><span
                 >{{ session.width }} × {{ session.height
@@ -406,19 +397,15 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 :roi="step === 1 ? roi : undefined"
               />
               <div v-if="!connected" class="preview-empty">
-                <div class="empty-reticle"><CameraIcon :size="40" :stroke-width="1.2" /></div>
+                <CameraIcon :size="32" :stroke-width="1.4" aria-hidden="true" />
                 <h2>
-                  {{
-                    session.source === 'import'
-                      ? 'Your images, your calibration.'
-                      : 'A better view starts here.'
-                  }}
+                  {{ session.source === 'import' ? 'Use saved images' : 'Camera not connected' }}
                 </h2>
                 <p>
                   {{
                     session.source === 'import'
-                      ? 'Check the board settings, then analyze your images.'
-                      : 'Connect a camera to see its live image and available controls.'
+                      ? 'Check the board settings before analyzing images.'
+                      : 'Connect a USB or built-in camera to see the preview.'
                   }}
                 </p>
                 <button
@@ -441,18 +428,16 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                   :disabled="working || connecting"
                   @click="connect"
                 >
-                  Reconnect camera</button
-                ><span class="preview-private"
-                  ><ShieldCheck :size="14" />Processed locally. Nothing uploaded.</span
-                >
+                  Reconnect camera
+                </button>
               </div>
               <div v-if="connected && step === 2" class="capture-hud" role="status">
                 <span class="detection-dot" :class="{ found: analysis?.valid }" /><span>{{
                   auto
                     ? captureReason
                     : analysis?.valid
-                      ? 'Board detected · ready to capture'
-                      : analysis?.reason || 'Looking for your board…'
+                      ? 'Board detected'
+                      : analysis?.reason || 'Looking for board…'
                 }}</span
                 ><span v-if="analysis?.corners.length" class="hud-count"
                   >{{ analysis.corners.length }} corners</span
@@ -465,33 +450,20 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 Click the image to move the focus area
               </div>
             </div>
-            <div class="preview-footer">
-              <template v-if="step === 2"
-                ><label class="check-label"
-                  ><input v-model="showDots" type="checkbox" />Captured corners</label
-                ><label class="check-label"
-                  ><input v-model="showCoverage" type="checkbox" />Coverage grid</label
-                ><span class="preview-footer-right"
-                  >{{ coverageData.percent.toFixed(0) }}% covered</span
-                ></template
-              ><template v-else
-                ><span><ShieldCheck :size="14" />Private by design</span
-                ><span>{{
-                  connected ? session.cameraLabel : 'USB and built-in cameras supported'
-                }}</span></template
+            <div v-if="step === 2" class="preview-footer">
+              <label class="check-label"
+                ><input v-model="showDots" type="checkbox" />Captured corners</label
+              ><label class="check-label"
+                ><input v-model="showCoverage" type="checkbox" />Coverage grid</label
+              ><span class="preview-footer-right"
+                >{{ coverageData.percent.toFixed(0) }}% covered</span
               >
             </div>
           </section>
 
           <div v-if="step === 0" class="tip-strip">
             <Info :size="20" />
-            <div>
-              <strong>One camera. One resolution. One calibration.</strong>
-              <p>
-                Use the same physical camera, resolution, focus, and zoom when you import the result
-                into PhotonVision.
-              </p>
-            </div>
+            <p>Use the same camera, resolution, focus, and zoom in PhotonVision.</p>
           </div>
           <template v-if="step === 1">
             <section class="panel focus-dashboard">
@@ -501,10 +473,10 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                   width="320"
                   height="200"
                   aria-label="Magnified focus area"
-                /><span>Pixel detail · selected area</span>
+                /><span>Selected focus area</span>
               </div>
               <div class="focus-metrics">
-                <span class="eyebrow">LIVE SHARPNESS</span>
+                <span class="eyebrow">Sharpness</span>
                 <div class="focus-number">
                   {{ (focusHistory.at(-1) ?? 0).toFixed(1) }}<small>relative</small>
                 </div>
@@ -518,7 +490,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                       focusHistory = [];
                     "
                   >
-                    Reset peak
+                    Reset best score
                   </button>
                 </div>
                 <svg
@@ -530,8 +502,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                   <polyline :points="spark" fill="none" stroke="currentColor" stroke-width="2" />
                 </svg>
                 <p class="small muted">
-                  Compare while the scene and exposure stay fixed. This is an adjustment aid, not an
-                  absolute quality score.
+                  Relative focus score. Keep the scene and exposure fixed when comparing values.
                 </p>
               </div>
             </section>
@@ -566,7 +537,9 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 <div>
                   <strong>Automatic capture</strong
                   ><small>{{
-                    auto ? 'Hold still. We’ll take the shot.' : 'Capture useful views as you move.'
+                    auto
+                      ? 'Hold the board still to capture.'
+                      : 'Save each new view when the board is still.'
                   }}</small>
                 </div>
               </div>
@@ -585,8 +558,8 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
             <div v-if="pendingImports.length" class="panel import-review">
               <h3>{{ pendingImports.length }} images ready to analyze</h3>
               <p class="small muted">
-                Check your target settings first. Images with different dimensions or insufficient
-                board detections will be skipped.
+                Check the board settings. Images with different dimensions or too few detected
+                corners will be skipped.
               </p>
               <label class="check-label"
                 ><input v-model="importAgreement" type="checkbox" />All images use the same camera,
@@ -600,7 +573,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               </button>
             </div>
             <details v-if="importErrors.length" class="panel">
-              <summary>{{ importErrors.length }} images were not accepted</summary>
+              <summary>{{ importErrors.length }} images skipped</summary>
               <ul class="import-errors">
                 <li v-for="item in importErrors" :key="item">{{ item }}</li>
               </ul>
@@ -618,8 +591,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
           <template v-if="step === 0">
             <section class="panel camera-setup">
               <div class="panel-heading">
-                <h3>Camera setup</h3>
-                <Usb :size="18" class="muted" />
+                <h3>Camera settings</h3>
               </div>
               <fieldset :disabled="connecting || working">
                 <label
@@ -662,8 +634,8 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 </details>
               </fieldset>
               <p class="small muted">
-                Modes are verified when connecting. Your camera may support only some of these
-                resolutions.
+                Available resolutions depend on your camera. The selected mode is checked on
+                connection.
               </p>
               <button
                 class="button primary full-width"
@@ -696,7 +668,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                   <dd>{{ session.cameraLabel }}</dd>
                 </div>
                 <div>
-                  <dt>Delivered mode</dt>
+                  <dt>Active resolution</dt>
                   <dd>
                     {{ settings.width }} × {{ settings.height }} @
                     {{ Number(settings.frameRate).toFixed(1) }} fps
@@ -714,7 +686,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 </div>
               </dl>
               <p v-if="unavailable.length" class="small muted">
-                Not exposed:
+                Unavailable controls:
                 {{
                   unavailable
                     .map(
@@ -734,41 +706,24 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
           <template v-if="step === 1"
             ><section class="panel guidance-panel">
               <div class="panel-heading">
-                <h3>A sharp starting point</h3>
-                <Focus :size="20" />
+                <h3>Focus instructions</h3>
               </div>
               <ol class="instruction-list">
                 <li>
-                  <strong>Use your working distance.</strong>
-                  <p>
-                    Place a detailed target where you’ll normally track objects. Keep the camera and
-                    target still.
-                  </p>
+                  Place a detailed target at your working distance. Keep it and the camera still.
                 </li>
                 <li>
-                  <strong>Adjust slowly.</strong>
-                  <p>
-                    Use bright, diffuse light and fixed exposure. Turn the lens through the sharpest
-                    point, then return to the best score.
-                  </p>
+                  Use bright, diffuse light and fixed exposure. Adjust focus slowly to find the
+                  highest sharpness score.
                 </li>
+                <li>Compare the center and edges without refocusing between them.</li>
                 <li>
-                  <strong>Check the whole image.</strong>
-                  <p>
-                    Inspect the center and edges without refocusing between them. Find a useful
-                    balance.
-                  </p>
-                </li>
-                <li>
-                  <strong>Lock it in.</strong>
-                  <p>
-                    Secure the lens and disable autofocus. Keep that setting throughout calibration
-                    and use.
-                  </p>
+                  Secure the lens and disable autofocus. Keep focus and zoom fixed during
+                  calibration and use.
                 </li>
               </ol>
               <p class="small muted">
-                Close-up calibration views can look softer. Don’t refocus for each board position.
+                Close-up views may look softer. Keep focus fixed as you move the board.
               </p>
               <a
                 class="small"
@@ -791,8 +746,8 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
             <div v-if="!controls.some((c) => c.key === 'focusMode')" class="tip-strip small">
               <Info :size="20" />
               <p>
-                Focus locking isn’t exposed by this camera. Adjust and lock the lens physically, or
-                confirm that it is fixed-focus.
+                This camera has no browser focus control. Lock the lens manually or check that it
+                has fixed focus.
               </p>
             </div></template
           >
@@ -805,8 +760,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
             />
             <section class="panel">
               <div class="panel-heading">
-                <h3>A useful set of views</h3>
-                <span class="count">{{ included.length }}</span>
+                <h3>Capture progress</h3>
               </div>
               <div class="capture-count">
                 <strong>{{ included.length }}</strong
@@ -816,8 +770,8 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 <span :style="{ width: Math.min(included.length, 100) + '%' }" />
               </div>
               <p class="small muted">
-                12 images enable a first solve. Around 100 varied views are a useful goal; quality
-                and coverage matter more than the count.
+                Calibration requires 12 images. Aim for about 100 varied views, then check coverage
+                and errors.
               </p>
               <ul class="capture-checklist">
                 <li>Cover the edges and all four corners.</li>
@@ -848,7 +802,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                     "
                 /></label>
                 <p class="small muted">
-                  An initial estimate, not a measured result. Use the lens specification if known.
+                  Starting estimate for calibration. Use the lens specification if known.
                 </p>
               </details>
             </section>
@@ -882,17 +836,12 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
         @remove="deleteFrame"
       />
       <footer v-if="step < 3" class="workflow-footer">
-        <span v-if="step === 0" class="small muted">{{
-          connected
-            ? 'Live camera connected. Your next step is focus.'
-            : 'Connect your camera or select an image set to begin.'
-        }}</span
-        ><span v-if="step === 1" class="small muted"
-          >Continuing confirms your lens is focused and will remain fixed.</span
+        <span v-if="step === 1" class="small muted"
+          >Confirm that focus and zoom will stay fixed.</span
         ><span v-if="step === 2" class="small muted">{{
           included.length < 12
-            ? `Capture ${12 - included.length} more useful views to enable calibration.`
-            : 'You can calibrate now or keep collecting more views.'
+            ? `${12 - included.length} more images needed to calibrate.`
+            : 'Ready to calibrate. You can still add images.'
         }}</span
         ><button
           v-if="step === 0"
@@ -913,6 +862,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
         </button>
       </footer>
       <div class="page-footnote">
+        <span>Images are processed and saved in this browser.</span>
         <span
           >PhotonCal · mrcal + OpenCV ·
           <a href="./LICENSE.txt" target="_blank" rel="noopener">GPL-3.0-or-later</a></span

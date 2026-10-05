@@ -137,7 +137,7 @@ test('live camera focus, stillness capture, duplicate suppression, and full-reso
     .getByRole('button', { name: 'Connect camera', exact: true })
     .click();
   await page.getByRole('button', { name: 'Continue to focus', exact: true }).click();
-  await expect(page.getByText('LIVE SHARPNESS', { exact: true })).toBeVisible();
+  await expect(page.getByText('Sharpness', { exact: true })).toBeVisible();
   await expect
     .poll(async () =>
       Number((await page.locator('.focus-number').textContent())?.replace('relative', '')),
