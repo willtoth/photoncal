@@ -102,9 +102,48 @@ npm run build:source      # Bundle exact app + native sources and notices
 npm run build
 ```
 
-Host the entire `dist/` directory, including `source/`, `engine/`, and notices. The app's footer links the source archive. The source archive is large and is only fetched when explicitly downloaded, not at startup. Regenerate it after source changes. No hosting/deployment has been performed.
+For a host that accepts large files, host the entire `dist/` directory, including `source/`, `engine/`, and notices. The app's footer links the source archive. The source archive is large and is only fetched when explicitly downloaded, not at startup. Regenerate it after source changes.
 
 Use HTTPS, `.wasm` MIME type `application/wasm`, and serve JS module workers from the same origin. Relative asset paths support a static subdirectory deployment. No COOP/COEP or SharedArrayBuffer is required: workers own single-threaded WASM instances. Do not open `index.html` via `file://`. A static host serves assets only; calibration remains client-side. Initial asset loading needs connectivity; this is not an installed/offline-cached PWA.
+
+### Cloudflare Pages with Wrangler
+
+Install or update the global Wrangler CLI, then sign in to the intended Cloudflare account:
+
+```sh
+npm install -g wrangler@latest
+wrangler login --scopes account:read user:read pages:write
+wrangler whoami
+wrangler pages project create photoncal --production-branch main  # first deployment only
+npm run deploy
+```
+
+In WSL2, if browser approval succeeds but the `localhost:8976` callback fails or login times out, use [device login](https://developers.cloudflare.com/workers/wrangler/commands/general/#use-wrangler-login-without-a-local-callback-server) instead:
+
+```sh
+wrangler login --device --browser=false --scopes account:read user:read pages:write
+wrangler whoami
+```
+
+Open the printed verification URL in your Windows browser and enter the displayed code while Wrangler is still running. Device login avoids the Windows-to-WSL localhost callback and replaces stale OAuth credentials after approval.
+
+These commands request only the account, user, and Pages permissions needed here. `wrangler whoami` may warn about missing scopes for other Cloudflare services; verify that it reports a logged-in account and `pages (write)`.
+
+If you have multiple accounts, set `CLOUDFLARE_ACCOUNT_ID` to the intended account's ID before creating or deploying the project. Do not put credentials in the repository.
+
+`npm run deploy` fetches any missing pinned native source trees into `.deps`, verifies the committed WASM manifest, regenerates corresponding source, builds the site, prepares `.build/cloudflare/`, and uploads it using `wrangler.toml`. It does not recompile WASM or require Emscripten. `npm run build:cloudflare` performs the same preparation without uploading. `npm run test:deploy` checks the packaging. Changes to native code require a local `npm run build:wasm` and committing the updated engine and manifest before publishing.
+
+Pages has a [25 MiB per-asset limit](https://developers.cloudflare.com/pages/platform/limits/), so the deployment package splits the complete source archive into at most 20 MiB parts. The source link redirects to a same-origin download page that joins and checks SHA-256 hashes in the browser. Individual part links and manual reconstruction instructions also work without JavaScript. Nothing from the archive is omitted. The original unsplit archive remains in `public/source/` and `dist/source/`; only the staged Cloudflare copy uses parts. Source downloads are never loaded during calibration.
+
+This is a [Direct Upload project](https://developers.cloudflare.com/pages/get-started/direct-upload/) deployed by GitHub Actions (below), not Pages' built-in Git integration. `npm run deploy` is also available for manual updates. Camera permissions and saved sessions are scoped to the deployed origin; use the stable production URL rather than changing preview URLs.
+
+### Automatic deployment from GitHub
+
+The **Check and deploy** workflow in `.github/workflows/test.yml` runs checks on pushes and pull requests. After all unit, packaging, engine-integrity and browser checks pass, a push to `main` in `willtoth/photoncal` publishes to **https://photoncal.pages.dev**. Pull requests and other branches never receive deployment credentials or publish. You can also use **Actions → Check and deploy → Run workflow**, selecting `main`.
+
+One-time setup: create a [Cloudflare API token](https://dash.cloudflare.com/profile/api-tokens) with **Account → Cloudflare Pages → Edit**, limited to `will@redhawkrobotics.org`'s account. Add it as the repository Actions secret **`CLOUDFLARE_API_TOKEN`** in [GitHub settings](https://github.com/willtoth/photoncal/settings/secrets/actions). The public account ID is already configured in the workflow. Do not copy Wrangler's short-lived browser OAuth credentials into CI. A missing secret produces an explicit failed deployment job; after adding it, rerun the failed job or push another commit. Rotate the secret when the token expires or is revoked.
+
+Deployments fetch/cache the pinned native sources, regenerate the full matching source download, then upload static assets with pinned Wrangler 4.147.0. Publication is serialized, and superseded main commits are skipped so an older queued run does not replace a newer build. A post-deployment check verifies the served WASM hash, source manifest, source redirect, and availability of every source part. No Cloudflare API token is exposed to the build steps, browser bundle, source archive, or pull-request jobs.
 
 ## Design references
 

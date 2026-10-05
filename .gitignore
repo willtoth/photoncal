@@ -6,3 +6,4 @@ test-results/
 playwright-report/
 *.local
 public/source/*.tar.gz
+.wrangler/

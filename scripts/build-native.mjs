@@ -8,7 +8,8 @@ import { createHash } from 'node:crypto';
 const root = path.resolve(import.meta.dirname, '..');
 const deps = path.join(root, '.deps');
 const mode = process.argv[2] ?? 'wasm';
-if (!['wasm', 'native'].includes(mode)) throw new Error('Build mode must be wasm or native');
+if (!['wasm', 'native', 'sources'].includes(mode))
+  throw new Error('Build mode must be wasm, native, or sources');
 const jobs = process.env.BUILD_JOBS ?? String(Math.min(os.availableParallelism(), 8));
 async function run(cmd, args, cwd = root, env = process.env) {
   console.log(`\n${cmd} ${args.join(' ')}`);
@@ -65,6 +66,13 @@ if (
     .digest('hex') !== '9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6'
 )
   throw new Error('nlohmann/json header checksum mismatch');
+
+// CI distributes the committed WASM together with its pinned source trees.
+// Fetching corresponding source does not require Emscripten or a native compiler.
+if (mode === 'sources') {
+  console.log('Pinned native sources and JSON header verified.');
+  process.exit(0);
+}
 
 const build = path.join(root, '.build', mode);
 await mkdir(build, { recursive: true });

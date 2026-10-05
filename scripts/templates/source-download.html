@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PhotonCal source code</title>
+    <style>
+      body {
+        font:
+          16px/1.6 system-ui,
+          sans-serif;
+        max-width: 800px;
+        margin: 48px auto;
+        padding: 0 24px;
+        color: #183239;
+        background: #f6f9f8;
+      }
+      a {
+        color: #006c61;
+      }
+      button {
+        font: inherit;
+        padding: 12px 20px;
+        cursor: pointer;
+      }
+      code,
+      li {
+        overflow-wrap: anywhere;
+      }
+      pre {
+        overflow-x: auto;
+        padding: 16px;
+        background: #e7eeec;
+      }
+      #status {
+        min-height: 2em;
+      }
+    </style>
+  </head>
+  <body>
+    <a href="../">← Back to PhotonCal</a>
+    <h1>PhotonCal source code</h1>
+    <p>
+      The complete corresponding source for this deployment: app code, build scripts, licenses, and
+      pinned native dependencies. See the included README for build instructions.
+    </p>
+    <p>
+      The {{SIZE}} MiB archive is stored in smaller parts to fit the static host's file limit.
+      Downloading joins and verifies those parts in your browser. This uses a few hundred megabytes
+      of memory; the manual method below needs no JavaScript.
+    </p>
+    <button id="download" type="button" disabled>Download complete source ({{SIZE}} MiB)</button>
+    <p id="status" role="status" aria-live="polite"></p>
+    <p>Archive SHA-256: <code>{{SHA256}}</code></p>
+    <details>
+      <summary>Manual download / low-memory alternative</summary>
+      <p>
+        Save every part below into a new, empty directory. In that directory, concatenate them in
+        filename order. On Linux/macOS:
+      </p>
+      <pre>
+cat photoncal-source.tar.gz.*.part &gt; photoncal-source.tar.gz
+shasum -a 256 photoncal-source.tar.gz
+tar -xzf photoncal-source.tar.gz</pre
+      >
+      <p>
+        Compare the hash with the value above before extracting.
+        <a href="SHA256SUMS" download>Checksum file</a> · <a href="manifest.json">Part manifest</a>
+      </p>
+      <ol>
+        {{LINKS}}
+      </ol>
+    </details>
+    <script type="module" src="./download.js"></script>
+  </body>
+</html>

@@ -19,6 +19,7 @@ try {
     'package-lock.json',
     'index.html',
     'vite.config.ts',
+    'wrangler.toml',
     'vitest.config.ts',
     'playwright.config.ts',
     'tsconfig.json',
