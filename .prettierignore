@@ -1,0 +1,9 @@
+.deps
+.build
+node_modules
+dist
+public
+test-results
+playwright-report
+tests/fixtures
+package-lock.json

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.deps/
+.build/
+test-results/
+playwright-report/
+*.local
+public/source/*.tar.gz

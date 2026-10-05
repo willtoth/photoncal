@@ -1,0 +1,36 @@
+{
+  "name": "photoncal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "build:wasm": "node scripts/build-native.mjs wasm",
+    "build:native": "node scripts/build-native.mjs native",
+    "build:source": "node scripts/source-bundle.mjs",
+    "format": "prettier --write src scripts tests *.json *.ts *.md && clang-format -i native/engine.cpp native/lapack-abi.c",
+    "test": "vitest run",
+    "test:engine": "node scripts/test-engine.mjs",
+    "test:e2e": "node scripts/prepare-fixtures.mjs && playwright test"
+  },
+  "dependencies": {
+    "fflate": "0.8.3",
+    "idb": "8.0.3",
+    "lucide-vue-next": "0.468.0",
+    "vue": "3.5.22"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.0",
+    "@types/node": "22.18.8",
+    "@vitejs/plugin-vue": "6.0.1",
+    "fake-indexeddb": "^6.2.4",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "4.1.11",
+    "vue-tsc": "3.1.1"
+  }
+}
