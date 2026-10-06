@@ -1,5 +1,6 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { Camera, type Control } from './core/camera';
+import { Camera, matchesMode, type CameraMode, type Control } from './core/camera';
+import { discoverCamera, modeKey, type CameraDiscovery } from './core/cameraModes';
 import { EngineClient } from './core/engine';
 import { AutoCapture, coverage, coveragePrompt } from './core/capture';
 import {
@@ -27,6 +28,22 @@ export function useCalibration() {
     connecting = ref(false),
     controls = ref<Control[]>([]),
     settings = ref<Record<string, any>>({});
+  const checkingCamera = ref(false),
+    cameraCheckProgress = ref(''),
+    cameraDiscovery = ref<CameraDiscovery>(),
+    cameraMode = ref('');
+  let cameraCheck: AbortController | undefined;
+  const cameraBusy = computed(() => connecting.value || checkingCamera.value);
+  const selectedCameraMode = computed(() =>
+    cameraDiscovery.value?.modes.find((mode) => modeKey(mode) === cameraMode.value),
+  );
+  const cameraSettingsPending = computed(
+    () =>
+      connected.value &&
+      !session.value.frames.length &&
+      !!selectedCameraMode.value &&
+      !matchesMode(settings.value, selectedCameraMode.value),
+  );
   const engineState = ref<'loading' | 'ready' | 'error'>('loading'),
     engineError = ref('');
   const error = ref(''),
@@ -67,7 +84,11 @@ export function useCalibration() {
   );
   const focusScore = computed(() => analysis.value?.sharpness ?? 0);
   const canSolve = computed(
-    () => included.value.length >= 12 && !working.value && engineState.value === 'ready',
+    () =>
+      included.value.length >= 12 &&
+      !working.value &&
+      !cameraBusy.value &&
+      engineState.value === 'ready',
   );
   function message(e: unknown) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -106,6 +127,60 @@ export function useCalibration() {
         (d) => d.kind === 'videoinput',
       );
   }
+  function cancelCameraCheck() {
+    cameraCheck?.abort();
+    cameraCheck = undefined;
+    checkingCamera.value = false;
+    cameraCheckProgress.value = '';
+  }
+  function clearCameraSetup() {
+    cameraDiscovery.value = undefined;
+    cameraMode.value = '';
+    controls.value = [];
+    settings.value = {};
+  }
+  function selectCamera(id: string) {
+    if (working.value || cameraBusy.value) return;
+    stopCamera();
+    deviceId.value = id;
+    clearCameraSetup();
+    if (!session.value.frames.length) resetFocus();
+  }
+  async function checkCamera() {
+    if (working.value || cameraBusy.value || session.value.frames.length) return;
+    stopCamera();
+    clearCameraSetup();
+    error.value = '';
+    checkingCamera.value = true;
+    cameraCheckProgress.value = 'Opening camera…';
+    const controller = new AbortController();
+    cameraCheck = controller;
+    try {
+      const found = await discoverCamera(deviceId.value, {
+        signal: controller.signal,
+        preferred: { width: session.value.width, height: session.value.height },
+        onProgress: (checked, total) => {
+          if (cameraCheck === controller)
+            cameraCheckProgress.value = `Checking settings ${checked} of ${total}…`;
+        },
+      });
+      if (cameraCheck !== controller || disposed) return;
+      cameraDiscovery.value = found;
+      cameraMode.value = modeKey(found.defaultMode);
+      deviceId.value = found.deviceId;
+      devices.value = found.devices;
+      controls.value = found.controls;
+      settings.value = found.settings;
+    } catch (e) {
+      if (cameraCheck === controller && !controller.signal.aborted) message(e);
+    } finally {
+      if (cameraCheck === controller) {
+        cameraCheck = undefined;
+        checkingCamera.value = false;
+        cameraCheckProgress.value = '';
+      }
+    }
+  }
   function stopCamera() {
     loopGeneration++;
     video.value?.cancelVideoFrameCallback?.(loopId);
@@ -116,12 +191,24 @@ export function useCalibration() {
     if (video.value) video.value.srcObject = null;
   }
   async function connect() {
-    if (working.value || connecting.value) return;
+    if (working.value || cameraBusy.value) return;
     error.value = '';
     connecting.value = true;
     try {
       if (session.value.frames.length && session.value.source === 'import')
         throw new Error('Start a new calibration to switch from imported images to a live camera.');
+      const savedRate = session.value.settings.frameRate;
+      const mode: CameraMode | undefined = session.value.frames.length
+        ? {
+            width: session.value.width,
+            height: session.value.height,
+            ...(typeof savedRate === 'number' && savedRate > 0 ? { frameRate: savedRate } : {}),
+          }
+        : cameraDiscovery.value?.deviceId === deviceId.value
+          ? selectedCameraMode.value
+          : undefined;
+      if (!mode)
+        throw new Error('Check available settings and select a resolution and frame rate first.');
       if (
         session.value.frames.length &&
         !window.confirm(
@@ -130,11 +217,11 @@ export function useCalibration() {
       )
         return;
       stopCamera();
-      const stream = await camera.connect(
-        deviceId.value,
-        session.value.width,
-        session.value.height,
-      );
+      const stream = await camera.connect(deviceId.value, mode);
+      if (disposed) {
+        camera.stop();
+        return;
+      }
       if (session.value.frames.length) {
         // A reopened track can reset its lens controls. Restore fixed optics
         // before accepting another image from an existing calibration session.
@@ -146,7 +233,11 @@ export function useCalibration() {
           )
             await camera.set(key, value);
         }
-      } else resetFocus();
+      } else {
+        session.value.width = camera.settings.width;
+        session.value.height = camera.settings.height;
+        resetFocus();
+      }
       connected.value = true;
       settings.value = { ...camera.settings };
       controls.value = camera.controls();
@@ -170,12 +261,14 @@ export function useCalibration() {
     }
   }
   async function changeControl(key: string, value: string | number) {
+    if (!connected.value || cameraBusy.value || working.value) return;
     error.value = '';
     try {
       if (session.value.frames.length && ['zoom', 'focusDistance', 'focusMode'].includes(key))
         throw new Error('Start a new calibration before changing focus or zoom.');
       await camera.set(key, value);
       settings.value = { ...camera.settings };
+      controls.value = camera.controls();
       session.value.settings = { ...camera.settings };
       resetFocus();
       await persist();
@@ -287,7 +380,11 @@ export function useCalibration() {
     manual = true;
   }
   function setStep(value: number) {
-    if (working.value) return;
+    if (working.value || cameraBusy.value) return;
+    if ((value === 1 || value === 2) && cameraSettingsPending.value) {
+      notice.value = 'Restart preview to apply the selected camera settings.';
+      return;
+    }
     if (value === 1 && session.value.source === 'import') {
       notice.value = 'Imported images must use fixed focus and zoom. Open Capture to analyze them.';
       return;
@@ -317,6 +414,7 @@ export function useCalibration() {
     analysis.value = undefined;
   }
   async function confirmFocus() {
+    if (cameraBusy.value || working.value) return;
     if (session.value.source === 'import') {
       step.value = 2;
       return;
@@ -328,6 +426,7 @@ export function useCalibration() {
       )
         await camera.set('focusMode', 'manual');
       settings.value = { ...camera.settings };
+      controls.value = camera.controls();
       session.value.settings = { ...camera.settings };
       session.value.focusConfirmed = true;
       await persist();
@@ -348,7 +447,7 @@ export function useCalibration() {
     focusHistory.value = [];
   }
   async function chooseImages(files: File[]) {
-    if (!files.length) return;
+    if (!files.length || working.value || cameraBusy.value) return;
     error.value = '';
     try {
       if (session.value.frames.length && session.value.source === 'camera')
@@ -556,7 +655,7 @@ export function useCalibration() {
     }
   }
   async function startNew() {
-    if (working.value || connecting.value) return;
+    if (working.value || cameraBusy.value) return;
     stopCamera();
     await persist();
     session.value = newSession();
@@ -569,8 +668,9 @@ export function useCalibration() {
     await persist();
   }
   async function resume(saved: Session) {
-    if (working.value || connecting.value) return;
+    if (working.value || cameraBusy.value) return;
     stopCamera();
+    clearCameraSetup();
     session.value = JSON.parse(JSON.stringify(saved));
     deviceId.value = typeof saved.settings.deviceId === 'string' ? saved.settings.deviceId : '';
     step.value = saved.result ? 3 : saved.frames.length ? 2 : 0;
@@ -606,6 +706,7 @@ export function useCalibration() {
     }
   }
   async function restoreArchive(file: File) {
+    if (working.value || cameraBusy.value) return;
     stopCamera();
     try {
       archiveProgress.value = 0;
@@ -653,6 +754,7 @@ export function useCalibration() {
   });
   onUnmounted(() => {
     disposed = true;
+    cancelCameraCheck();
     stopCamera();
     vision.cancel();
     solver.cancel();
@@ -668,6 +770,16 @@ export function useCalibration() {
     deviceId,
     connected,
     connecting,
+    checkingCamera,
+    cameraBusy,
+    cameraCheckProgress,
+    cameraDiscovery,
+    cameraMode,
+    selectedCameraMode,
+    cameraSettingsPending,
+    checkCamera,
+    cancelCameraCheck,
+    selectCamera,
     controls,
     settings,
     engineState,

@@ -15,7 +15,7 @@ Camera access requires **localhost or HTTPS**. An ordinary HTTP LAN address will
 
 ## Workflow
 
-1. **Camera:** select the device and resolution you’ll use in PhotonVision. Connect to check the active resolution and adjust the available controls.
+1. **Camera:** select a device and click **Check available settings**. This briefly opens the camera to test resolution/FPS combinations, then closes it. Choose a verified pair and click **Start preview**. Adjust any available camera controls while preview is running.
 2. **Focus:** focus at your working distance with steady light and exposure. Click the preview or choose a center/corner region to compare sharpness scores. Secure the lens, fix zoom, and disable autofocus before continuing.
 3. **Capture:** enter the measured board settings. Capture large, tilted views at different positions and distances, including the image edges and corners. Automatic capture saves new views when the board is still; **Capture now** or Space saves manually. Use the coverage grid to find areas that need more views.
 4. **Results:** calibrate, then inspect per-image errors, outliers, residuals, undistorted previews, and projection uncertainty. With at least 24 images, you can compare calibrations from two image subsets. Download the PhotonVision JSON and a ZIP session archive.
@@ -24,7 +24,11 @@ Calibration requires 12 usable images. Aim for about 100 varied views, then use 
 
 ### Camera and capture behavior
 
-Camera controls depend on the browser and driver. The app reports unavailable controls and requests unresized images where supported. The focus score compares full-resolution gradient sharpness, with recent history and a best score. It measures relative changes under a fixed scene and exposure, not MTF or an absolute quality threshold. Confirming focus requests manual focus mode when available.
+The settings check tests common resolution/FPS pairs, the browser’s default, and combinations from reported capability limits. Only configurations confirmed by the browser are offered. The check has progress and cancellation, releases the camera when finished, and does not save images. It cannot enumerate every native camera mode: browser capabilities describe separate ranges, not a table of supported combinations. Camera encoding (such as MJPEG or YUYV) is selected by the browser and cannot be chosen here. See the [browser capture specification](https://www.w3.org/TR/mediacapture-streams/#terminology).
+
+Starting preview requests the selected resolution and FPS together and verifies the returned settings. Resizing is disabled where supported; the app reports when it cannot confirm unscaled capture. Changing the selection leaves the active stream unchanged until **Restart preview**. After images are captured, the session resolution is locked. Reconnecting uses the saved resolution and reported FPS; older sessions without an FPS value leave frame rate to the browser.
+
+Brightness, contrast, exposure, focus, and other camera controls depend on the browser, OS, and driver. The settings check lists adjustable controls and identifies those unavailable in the browser. Start preview to adjust them. Changing a control retains the selected resolution/FPS constraints. The focus score compares full-resolution gradient sharpness, with recent history and a best score. It measures relative changes under a fixed scene and exposure, not MTF or an absolute quality threshold. Confirming focus requests manual focus mode when available.
 
 Automatic capture requires a valid board detection, at least five analyzed frames, and 250 ms of stability. It checks displacement and fitted corner speed, with a speed limit of 2 pixels/second at 640px width, scaled with resolution. After capture, a 100 ms cooldown and duplicate-view check prevent repeated saves of the same view. Slow analysis or movement can extend the wait. The saved frame is checked again at full resolution. These checks cannot guarantee freedom from exposure blur or rolling-shutter distortion.
 

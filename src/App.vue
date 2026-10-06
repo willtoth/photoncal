@@ -21,6 +21,8 @@ import {
   LoaderCircle,
 } from 'lucide-vue-next';
 import { useCalibration } from './useCalibration';
+import { modeLabel } from './core/camera';
+import { modeKey } from './core/cameraModes';
 import CameraControls from './components/CameraControls.vue';
 import BoardSettings from './components/BoardSettings.vue';
 import CaptureOverlay from './components/CaptureOverlay.vue';
@@ -37,6 +39,16 @@ const {
   deviceId,
   connected,
   connecting,
+  checkingCamera,
+  cameraBusy,
+  cameraCheckProgress,
+  cameraDiscovery,
+  cameraMode,
+  selectedCameraMode,
+  cameraSettingsPending,
+  checkCamera,
+  cancelCameraCheck,
+  selectCamera,
   controls,
   settings,
   engineState,
@@ -71,7 +83,6 @@ const {
   connect,
   stopCamera,
   changeControl,
-  resetFocus,
   capture,
   setStep,
   confirmFocus,
@@ -101,33 +112,11 @@ const steps = [
 ];
 const titles = ['Camera setup', 'Adjust focus', 'Capture images', 'Calibration results'];
 const descriptions = [
-  'Select your camera and the resolution you’ll use in PhotonVision.',
+  'Check your camera’s settings, then choose a resolution and frame rate.',
   'Focus at your working distance, then check the center and edges.',
   'Capture the board at different positions, distances, and angles.',
   'Check coverage, residuals, and uncertainty before exporting.',
 ];
-const resolution = computed({
-  get: () => `${session.value.width}x${session.value.height}`,
-  set: (value: string) => {
-    const [w, h] = value.split('x').map(Number);
-    session.value.width = w!;
-    session.value.height = h!;
-    resetFocus();
-  },
-});
-const commonRes = [
-  '640x480',
-  '800x600',
-  '960x720',
-  '1280x720',
-  '1280x800',
-  '1280x960',
-  '1920x1080',
-  '1920x1200',
-  '2560x1440',
-  '3840x2160',
-];
-const resolutions = computed(() => Array.from(new Set([...commonRes, resolution.value])));
 const spark = computed(() => {
   const points = focusHistory.value,
     max = Math.max(bestFocus.value, 1);
@@ -139,11 +128,6 @@ const focusPercent = computed(() =>
   bestFocus.value > 0
     ? Math.min(100, ((focusHistory.value.at(-1) ?? 0) / bestFocus.value) * 100)
     : 0,
-);
-const unavailable = computed(() =>
-  ['brightness', 'contrast', 'exposureTime', 'focusDistance'].filter(
-    (key) => !controls.value.some((c) => c.key === key),
-  ),
 );
 function previewClick(event: PointerEvent) {
   if (step.value !== 1 || !connected.value) return;
@@ -196,14 +180,14 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
         <button
           class="header-button"
           aria-label="Open archive"
-          :disabled="working"
+          :disabled="working || cameraBusy"
           @click="archiveInput?.click()"
         >
           <FolderOpen :size="16" /><span>Open archive</span></button
         ><button
           class="header-button"
           aria-label="Save session"
-          :disabled="working || archiveProgress !== undefined"
+          :disabled="working || cameraBusy || archiveProgress !== undefined"
           @click="exportArchive"
         >
           <Download :size="16" /><span>Save session</span>
@@ -234,7 +218,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
           class="step-item"
           :class="{ active: step === index, complete: step > index }"
           :aria-current="step === index ? 'step' : undefined"
-          :disabled="working"
+          :disabled="working || cameraBusy"
           @click="setStep(index)"
         >
           <span class="step-icon"
@@ -251,11 +235,13 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
         <div class="session-summary">
           <span class="sidebar-label">Session</span
           ><strong>{{ session.cameraLabel || 'No camera selected' }}</strong
-          ><span>{{ session.width }} × {{ session.height }} · {{ included.length }} images</span>
+          ><span v-if="session.cameraLabel"
+            >{{ session.width }} × {{ session.height }} · {{ included.length }} images</span
+          >
           <div class="mini-progress"><span :style="{ width: coverageData.percent + '%' }" /></div>
           <small>{{ coverageData.percent.toFixed(0) }}% image coverage</small>
         </div>
-        <button class="button full-width" :disabled="working" @click="startNew">
+        <button class="button full-width" :disabled="working || cameraBusy" @click="startNew">
           <Plus :size="16" />New calibration</button
         ><button
           class="text-button full-width saved-sessions-button"
@@ -267,7 +253,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
           <button
             v-for="saved in sessions"
             :key="saved.id"
-            :disabled="working"
+            :disabled="working || cameraBusy"
             @click="
               resume(saved);
               sessionMenu = false;
@@ -287,12 +273,12 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
     </aside>
     <main class="main-content">
       <div class="mobile-session-actions">
-        <button class="button small-button" :disabled="working || connecting" @click="startNew">
+        <button class="button small-button" :disabled="working || cameraBusy" @click="startNew">
           <Plus :size="15" />New calibration
         </button>
         <select
           aria-label="Saved sessions"
-          :disabled="working || connecting"
+          :disabled="working || cameraBusy"
           @change="restoreSelected"
         >
           <option value="">Saved sessions ({{ sessions.length }})</option>
@@ -365,12 +351,17 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                       ? 'Imported images'
                       : 'Camera preview'
                 }}</span
-              ><span
-                >{{ session.width }} × {{ session.height
-                }}<template v-if="connected">
-                  · {{ Number(settings.frameRate ?? 0).toFixed(0) }} fps</template
-                ></span
+              ><span v-if="connected">{{
+                modeLabel({
+                  width: settings.width,
+                  height: settings.height,
+                  frameRate: settings.frameRate,
+                })
+              }}</span>
+              <span v-else-if="session.source === 'import' || session.frames.length"
+                >{{ session.width }} × {{ session.height }}</span
               >
+              <span v-else-if="selectedCameraMode">{{ modeLabel(selectedCameraMode) }}</span>
             </div>
             <div
               class="viewport-media"
@@ -399,33 +390,53 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               <div v-if="!connected" class="preview-empty">
                 <CameraIcon :size="32" :stroke-width="1.4" aria-hidden="true" />
                 <h2>
-                  {{ session.source === 'import' ? 'Use saved images' : 'Camera not connected' }}
+                  {{
+                    session.source === 'import'
+                      ? 'Use saved images'
+                      : checkingCamera
+                        ? 'Checking camera settings'
+                        : cameraDiscovery
+                          ? 'Preview stopped'
+                          : 'Camera not connected'
+                  }}
                 </h2>
                 <p>
                   {{
                     session.source === 'import'
                       ? 'Check the board settings before analyzing images.'
-                      : 'Connect a USB or built-in camera to see the preview.'
+                      : checkingCamera
+                        ? 'The camera is on while settings are checked.'
+                        : cameraDiscovery
+                          ? 'Choose a resolution and frame rate, then start preview.'
+                          : 'Choose a camera and check its available settings.'
                   }}
                 </p>
                 <button
                   v-if="step === 0 && session.source !== 'import'"
                   class="button mint-button"
-                  :disabled="connecting"
-                  @click="connect"
+                  :disabled="cameraBusy || working"
+                  @click="cameraDiscovery || session.frames.length ? connect() : checkCamera()"
                 >
-                  <Usb :size="17" />{{ connecting ? 'Connecting…' : 'Connect camera' }}</button
+                  <Usb :size="17" />{{
+                    connecting
+                      ? 'Starting preview…'
+                      : checkingCamera
+                        ? 'Checking camera…'
+                        : cameraDiscovery || session.frames.length
+                          ? 'Start preview'
+                          : 'Check available settings'
+                  }}</button
                 ><button
                   v-if="session.source === 'import'"
                   class="button mint-button"
-                  :disabled="working"
+                  :disabled="working || cameraBusy"
                   @click="fileInput?.click()"
                 >
                   <ImagePlus :size="17" />Choose images</button
                 ><button
                   v-if="step === 2 && session.source === 'camera'"
                   class="button mint-button"
-                  :disabled="working || connecting"
+                  :disabled="working || cameraBusy"
                   @click="connect"
                 >
                   Reconnect camera
@@ -580,7 +591,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
             </details>
             <FrameGallery
               :session="session"
-              :disabled="working || archiveProgress !== undefined"
+              :disabled="working || cameraBusy || archiveProgress !== undefined"
               @inspect="activeFrame = $event"
               @toggle="toggleFrame"
               @remove="deleteFrame"
@@ -593,9 +604,13 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               <div class="panel-heading">
                 <h3>Camera settings</h3>
               </div>
-              <fieldset :disabled="connecting || working">
-                <label
-                  >Camera<select v-model="deviceId">
+              <fieldset :disabled="cameraBusy || working">
+                <label>
+                  Camera
+                  <select
+                    :value="deviceId"
+                    @change="selectCamera(($event.target as HTMLSelectElement).value)"
+                  >
                     <option value="">Default camera</option>
                     <option
                       v-for="(device, index) in devices"
@@ -604,60 +619,101 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                     >
                       {{ device.label || `Camera ${index + 1}` }}
                     </option>
-                  </select></label
-                ><label
-                  >Resolution<select v-model="resolution" :disabled="session.frames.length > 0">
-                    <option v-for="res in resolutions" :key="res" :value="res">
-                      {{ res.replace('x', ' × ') }}
-                    </option>
-                  </select></label
-                >
-                <details class="custom-resolution">
-                  <summary>Custom resolution</summary>
-                  <div class="field-pair">
-                    <label
-                      >Width<input
-                        v-model.number="session.width"
-                        :disabled="session.frames.length > 0"
-                        type="number"
-                        min="16"
-                        max="8192" /></label
-                    ><label
-                      >Height<input
-                        v-model.number="session.height"
-                        :disabled="session.frames.length > 0"
-                        type="number"
-                        min="16"
-                        max="8192"
-                    /></label>
-                  </div>
-                </details>
+                  </select>
+                </label>
+                <template v-if="!session.frames.length">
+                  <p class="small muted camera-check-note">
+                    Checking settings briefly turns on the camera. Preview starts separately.
+                  </p>
+                  <button
+                    class="button full-width"
+                    :class="{ primary: !cameraDiscovery }"
+                    @click="checkCamera"
+                  >
+                    <RefreshCw :size="16" />{{
+                      cameraDiscovery ? 'Check settings again' : 'Check available settings'
+                    }}
+                  </button>
+                  <label v-if="cameraDiscovery" class="camera-mode">
+                    Resolution and frame rate
+                    <select v-model="cameraMode">
+                      <option
+                        v-for="mode in cameraDiscovery.modes"
+                        :key="modeKey(mode)"
+                        :value="modeKey(mode)"
+                      >
+                        {{ modeLabel(mode) }}
+                      </option>
+                    </select>
+                  </label>
+                </template>
+                <p v-else class="small muted camera-check-note">
+                  Session resolution: {{ session.width }} × {{ session.height }}. Start a new
+                  calibration to change it.
+                </p>
               </fieldset>
-              <p class="small muted">
-                Available resolutions depend on your camera. The selected mode is checked on
-                connection.
-              </p>
+              <div v-if="checkingCamera" class="camera-check-status">
+                <p class="small" role="status">
+                  <LoaderCircle class="spin" :size="16" />{{ cameraCheckProgress }}
+                </p>
+                <button class="text-button" @click="cancelCameraCheck">Cancel check</button>
+              </div>
+              <template v-if="cameraDiscovery && !session.frames.length">
+                <p class="small muted">
+                  {{ cameraDiscovery.modes.length }}
+                  {{ cameraDiscovery.modes.length === 1 ? 'configuration' : 'configurations' }}
+                  verified. The browser controls encoding.
+                </p>
+                <details class="camera-check-details">
+                  <summary>About these settings</summary>
+                  <p class="small muted">
+                    This checks common resolutions and frame rates, plus the browser’s default.
+                    Browsers do not provide a complete list of native camera modes or an encoding
+                    selector.
+                  </p>
+                </details>
+                <p v-if="!cameraDiscovery.unscaled" class="small error-text">
+                  This browser cannot confirm unscaled capture. Check that the image framing matches
+                  PhotonVision.
+                </p>
+              </template>
               <button
+                v-if="selectedCameraMode || (session.frames.length && session.source !== 'import')"
                 class="button primary full-width"
-                :disabled="connecting || working"
+                :disabled="cameraBusy || working"
                 @click="connect"
               >
-                <RefreshCw v-if="connected" :size="16" /><CameraIcon v-else :size="16" />{{
-                  connecting ? 'Connecting…' : connected ? 'Apply & reconnect' : 'Connect camera'
-                }}</button
-              ><button v-if="connected" class="text-button full-width" @click="stopCamera">
-                Disconnect
+                <CameraIcon :size="16" />{{
+                  connecting ? 'Starting preview…' : connected ? 'Restart preview' : 'Start preview'
+                }}
+              </button>
+              <p v-if="cameraSettingsPending" class="small muted" role="status">
+                Restart preview to apply the selected settings.
+              </p>
+              <button
+                v-if="connected"
+                class="text-button full-width"
+                :disabled="cameraBusy || working"
+                @click="stopCamera"
+              >
+                Stop preview
               </button>
               <div class="or-divider"><span>or</span></div>
-              <button class="button full-width" :disabled="working" @click="fileInput?.click()">
+              <button
+                class="button full-width"
+                :disabled="working || cameraBusy"
+                @click="fileInput?.click()"
+              >
                 <ImagePlus :size="17" />Use saved images
               </button>
             </section>
             <CameraControls
-              v-if="connected"
               :controls="controls"
               :settings="settings"
               :locked="!!session.frames.length"
+              :checked="!!cameraDiscovery || connected"
+              :inactive="!connected"
+              :disabled="working || cameraBusy"
               @change="changeControl"
             />
             <section v-if="connected" class="panel">
@@ -668,10 +724,15 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                   <dd>{{ session.cameraLabel }}</dd>
                 </div>
                 <div>
-                  <dt>Active resolution</dt>
+                  <dt>Active settings</dt>
                   <dd>
-                    {{ settings.width }} × {{ settings.height }} @
-                    {{ Number(settings.frameRate).toFixed(1) }} fps
+                    {{
+                      modeLabel({
+                        width: settings.width,
+                        height: settings.height,
+                        frameRate: settings.frameRate,
+                      })
+                    }}
                   </dd>
                 </div>
                 <div>
@@ -685,22 +746,6 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                   </dd>
                 </div>
               </dl>
-              <p v-if="unavailable.length" class="small muted">
-                Unavailable controls:
-                {{
-                  unavailable
-                    .map(
-                      (s) =>
-                        ({
-                          brightness: 'brightness',
-                          contrast: 'contrast',
-                          exposureTime: 'shutter speed',
-                          focusDistance: 'focus distance',
-                        })[s],
-                    )
-                    .join(', ')
-                }}.
-              </p>
             </section>
           </template>
           <template v-if="step === 1"
@@ -741,9 +786,16 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               "
               :settings="settings"
               :locked="!!session.frames.length"
+              :expected="['focusMode', 'focusDistance', 'exposureMode', 'exposureTime']"
+              :checked="!!cameraDiscovery || connected"
+              :inactive="!connected"
+              :disabled="working || cameraBusy"
               @change="changeControl"
             />
-            <div v-if="!controls.some((c) => c.key === 'focusMode')" class="tip-strip small">
+            <div
+              v-if="!controls.some((c) => ['focusMode', 'focusDistance'].includes(c.key))"
+              class="tip-strip small"
+            >
               <Info :size="20" />
               <p>
                 This camera has no browser focus control. Lock the lens manually or check that it
@@ -795,7 +847,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                     type="number"
                     min="10"
                     max="170"
-                    :disabled="working"
+                    :disabled="working || cameraBusy"
                     @change="
                       session.revision++;
                       persist();
@@ -809,7 +861,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
             <button
               v-if="session.source === 'import'"
               class="button full-width"
-              :disabled="working"
+              :disabled="working || cameraBusy"
               @click="fileInput?.click()"
             >
               <ImagePlus :size="17" />Add more images
@@ -830,7 +882,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
       <FrameGallery
         v-if="step === 3 && session.frames.length"
         :session="session"
-        :disabled="working || archiveProgress !== undefined"
+        :disabled="working || cameraBusy || archiveProgress !== undefined"
         @inspect="activeFrame = $event"
         @toggle="toggleFrame"
         @remove="deleteFrame"
@@ -846,7 +898,9 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
         ><button
           v-if="step === 0"
           class="button primary"
-          :disabled="!connected || working || engineState !== 'ready'"
+          :disabled="
+            !connected || working || cameraBusy || cameraSettingsPending || engineState !== 'ready'
+          "
           @click="setStep(1)"
         >
           Continue to focus<ChevronRight :size="17" /></button

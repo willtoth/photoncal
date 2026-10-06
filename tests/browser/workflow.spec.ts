@@ -90,7 +90,8 @@ test('live camera focus, stillness capture, duplicate suppression, and full-reso
   await page.addInitScript(() => {
     // Real browser MediaStream/canvas + real WASM detector; only camera hardware is replaced.
     Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
-      value: async () => {
+      value: async (constraints: MediaStreamConstraints) => {
+        (window as any).lastCameraRequest = constraints;
         const image = new Image();
         image.src = '/test-board.png';
         await image.decode();
@@ -134,7 +135,11 @@ test('live camera focus, stillness capture, duplicate suppression, and full-reso
   await expect(page.getByText('mrcal ready', { exact: true })).toBeVisible();
   await page
     .locator('.camera-setup')
-    .getByRole('button', { name: 'Connect camera', exact: true })
+    .getByRole('button', { name: 'Check available settings', exact: true })
+    .click();
+  await page
+    .locator('.camera-setup')
+    .getByRole('button', { name: 'Start preview', exact: true })
     .click();
   await page.getByRole('button', { name: 'Continue to focus', exact: true }).click();
   await expect(page.getByText('Sharpness', { exact: true })).toBeVisible();
@@ -179,6 +184,20 @@ test('live camera focus, stillness capture, duplicate suppression, and full-reso
     [1280, 720],
     [1280, 720],
   ]);
+  await page.locator('.sidebar nav button').first().click();
+  await expect(page.getByLabel('Resolution and frame rate')).toHaveCount(0);
+  await expect(page.locator('.camera-setup')).toContainText('Session resolution: 1280 × 720');
+  await page.reload();
+  await page.getByRole('button', { name: /Browse saved sessions/ }).click();
+  await page.locator('.saved-sessions button').first().click();
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Reconnect camera', exact: true }).click();
+  await expect(page.getByRole('switch', { name: 'Automatic capture' })).toBeEnabled();
+  expect(await page.evaluate(() => (window as any).lastCameraRequest.video)).toMatchObject({
+    width: { exact: 1280 },
+    height: { exact: 720 },
+    frameRate: { exact: 20 },
+  });
 });
 
 test('permission failures remain actionable and narrow screens do not overflow', async ({
@@ -193,7 +212,7 @@ test('permission failures remain actionable and narrow screens do not overflow',
   await page.goto('/');
   await page
     .locator('.camera-setup')
-    .getByRole('button', { name: 'Connect camera', exact: true })
+    .getByRole('button', { name: 'Check available settings', exact: true })
     .click();
   await expect(page.getByRole('alert')).toContainText('Camera permission was denied');
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);

@@ -493,8 +493,23 @@ details > label {
 .camera-setup > .text-button {
   margin-top: 7px;
 }
-.custom-resolution summary {
-  font-size: 12px;
+.camera-check-note,
+.camera-mode {
+  margin-top: 16px;
+}
+.camera-check-status {
+  margin-top: 16px;
+}
+.camera-check-status p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.camera-check-details summary {
+  margin-bottom: 8px;
+}
+.camera-control:first-child {
+  margin-top: 16px;
 }
 .or-divider {
   display: flex;
