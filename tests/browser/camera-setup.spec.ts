@@ -179,6 +179,14 @@ test('manual exposure stays selected, unlocks the shutter, and reports driver re
   await expect(page.getByRole('alert')).toContainText('did not apply exposure mode (manual)');
   await expect(exposureMode).toHaveValue('continuous');
   await expect(shutter).toBeDisabled();
+  await expect(
+    page.getByRole('button', { name: 'Browse saved sessions (0)', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'New calibration', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Camera setup', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Browse saved sessions (0)', exact: true }),
+  ).toBeVisible();
 });
 
 test('cancelling a check releases the camera and a late result cannot replace a new check', async ({

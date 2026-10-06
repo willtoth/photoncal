@@ -11,12 +11,15 @@ const dbPromise = () =>
 const plain = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 export async function saveSession(session: Session) {
   const db = await dbPromise();
+  if (!session.frames.length) return;
   session.updatedAt = Date.now();
   await db.put('sessions', plain(session));
 }
 export async function listSessions(): Promise<Session[]> {
   const db = await dbPromise();
-  return (await db.getAll('sessions')).sort((a, b) => b.updatedAt - a.updatedAt);
+  return (await db.getAll('sessions'))
+    .filter((session: Session) => session.frames.length > 0)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 export async function addFrame(session: Session, frame: Frame, blob: Blob) {
   const db = await dbPromise(),
@@ -45,7 +48,8 @@ export async function removeFrame(session: Session, id: string) {
     updatedAt: Date.now(),
   };
   await tx.objectStore('images').delete(`${session.id}/${id}`);
-  await tx.objectStore('sessions').put(next);
+  if (next.frames.length) await tx.objectStore('sessions').put(next);
+  else await tx.objectStore('sessions').delete(session.id);
   await tx.done;
   Object.assign(session, next);
 }
@@ -261,6 +265,7 @@ export async function importArchive(file: File, onProgress: (n: number) => void)
     if (!entries.has(`images/${f.id}.png`)) throw new Error(`Archive is missing ${f.name}.`);
   session.id = crypto.randomUUID();
   session.updatedAt = Date.now();
+  if (!session.frames.length) return session;
   // Restore atomically: a corrupt or over-quota archive never replaces a session.
   const db = await dbPromise(),
     tx = db.transaction(['sessions', 'images'], 'readwrite');

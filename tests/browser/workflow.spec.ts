@@ -39,11 +39,17 @@ test('real board images → native WASM solve → diagnostics → PhotonVision e
   await expect(page.getByText('mrcal ready', { exact: true })).toBeVisible();
   await page.locator('input[type=file][multiple]').setInputFiles(images);
   await expect(page.getByText('12 images ready to analyze')).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Browse saved sessions (0)', exact: true }),
+  ).toBeVisible();
   await page.getByLabel('All images use the same camera, resolution, focus, and zoom.').check();
   await page.getByRole('button', { name: 'Analyze images', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Calibrate 12 images', exact: true })).toBeEnabled({
     timeout: 60_000,
   });
+  await expect(
+    page.getByRole('button', { name: 'Browse saved sessions (1)', exact: true }),
+  ).toBeVisible();
   await page.getByRole('button', { name: 'Calibrate 12 images', exact: true }).click();
   const downloadButton = page.getByRole('button', {
     name: 'Download PhotonVision JSON',
@@ -270,12 +276,18 @@ test('live capture handles zero media timestamps, handheld movement, and duplica
   const steadiness = page.getByRole('combobox', { name: 'Capture steadiness', exact: true });
   await expect(steadiness).toHaveValue('handheld');
   await steadiness.selectOption('strict');
+  await expect(
+    page.getByRole('button', { name: 'Browse saved sessions (0)', exact: true }),
+  ).toBeVisible();
   await page.evaluate(() => (window as any).startTestMotion());
   await page.getByRole('switch', { name: 'Automatic capture' }).click();
   await page.waitForTimeout(1000);
   await expect(page.locator('.gallery .count')).toHaveText('0');
   await steadiness.selectOption('handheld');
   await expect(page.locator('.gallery .count')).toHaveText('1', { timeout: 30_000 });
+  await expect(
+    page.getByRole('button', { name: 'Browse saved sessions (1)', exact: true }),
+  ).toBeVisible();
   await page.evaluate(() => (window as any).stopTestMotion());
   await expect(page.getByRole('slider', { name: 'Focus distance', exact: true })).toBeDisabled();
   await expect(page.getByRole('slider', { name: 'Zoom', exact: true })).toBeDisabled();
@@ -324,6 +336,10 @@ test('live capture handles zero media timestamps, handheld movement, and duplica
   await page.locator('.sidebar nav button').first().click();
   await expect(page.getByLabel('Resolution and frame rate')).toHaveCount(0);
   await expect(page.locator('.camera-setup')).toContainText('Session resolution: 1280 × 720');
+  await page.getByRole('button', { name: 'New calibration', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Browse saved sessions (1)', exact: true }),
+  ).toBeVisible();
   await page.reload();
   await page.getByRole('button', { name: /Browse saved sessions/ }).click();
   await page.locator('.saved-sessions button').first().click();
@@ -335,6 +351,16 @@ test('live capture handles zero media timestamps, handheld movement, and duplica
     height: { exact: 720 },
     frameRate: { exact: 20 },
   });
+  await page.getByRole('button', { name: 'Delete Capture 1', exact: true }).click();
+  await expect(page.locator('.gallery .count')).toHaveText('1');
+  await expect(
+    page.getByRole('button', { name: 'Browse saved sessions (1)', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Delete Capture 2', exact: true }).click();
+  await expect(page.locator('.gallery .count')).toHaveText('0');
+  await expect(
+    page.getByRole('button', { name: 'Browse saved sessions (0)', exact: true }),
+  ).toBeVisible();
 });
 
 test('permission failures remain actionable and narrow screens do not overflow', async ({

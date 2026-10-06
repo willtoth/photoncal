@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
+import { openDB } from 'idb';
 import { newSession, type CalibrationResult } from '../../src/core/types';
 import {
   addFrame,
@@ -10,6 +11,7 @@ import {
   validateSession,
   removeFrame,
   listSessions,
+  saveSession,
 } from '../../src/core/storage';
 import { photonVisionCalibration } from '../../src/core/export';
 function calibrated() {
@@ -64,6 +66,65 @@ describe('PhotonVision export', () => {
   });
 });
 describe('session archives', () => {
+  it('keeps empty setup in memory and saves all settings with the first image', async () => {
+    const s = newSession();
+    s.name = 'Unsaved camera setup';
+    s.focusConfirmed = true;
+    s.settings = { brightness: 60 };
+    s.board.squareSize = 0.03;
+    await saveSession(s);
+    const db = await openDB('photoncal', 1);
+    expect(await db.get('sessions', s.id)).toBeUndefined();
+    await addFrame(
+      s,
+      {
+        id: 'first',
+        name: 'Capture 1',
+        capturedAt: 1,
+        corners: [],
+        included: true,
+        source: 'camera',
+        sharpness: 20,
+      },
+      new Blob(['first image']),
+    );
+    expect(await db.get('sessions', s.id)).toEqual(s);
+    s.settings.brightness = 70;
+    await saveSession(s);
+    expect((await db.get('sessions', s.id)).settings.brightness).toBe(70);
+    // Excluding an image does not make a session empty.
+    s.frames[0]!.included = false;
+    await saveSession(s);
+    expect((await listSessions()).some((saved) => saved.id === s.id)).toBe(true);
+    await removeFrame(s, 'first');
+    expect(await db.get('sessions', s.id)).toBeUndefined();
+    expect(await getImage(s.id, 'first')).toBeUndefined();
+    await saveSession(s);
+    expect(await db.get('sessions', s.id)).toBeUndefined();
+    db.close();
+  });
+  it('omits previously saved empty sessions without deleting their settings', async () => {
+    const s = newSession();
+    const db = await openDB('photoncal', 1);
+    await db.put('sessions', s);
+    expect((await listSessions()).some((saved) => saved.id === s.id)).toBe(false);
+    expect(await db.get('sessions', s.id)).toEqual(s);
+    db.close();
+  });
+  it('opens an empty archive in memory without saving a browser session', async () => {
+    const s = newSession();
+    s.board.squareSize = 0.04;
+    const bytes = zipSync({ 'session.json': strToU8(JSON.stringify(s)) });
+    const restored = await importArchive(
+      new File([new Uint8Array(bytes).buffer], 'empty.zip'),
+      () => {},
+    );
+    expect(restored.frames).toHaveLength(0);
+    expect(restored.board).toEqual(s.board);
+    const db = await openDB('photoncal', 1);
+    expect(await db.get('sessions', restored.id)).toBeUndefined();
+    db.close();
+  });
   it('round-trips original pixels, corner IDs, board metadata, and results losslessly', async () => {
     const s = calibrated();
     const blob = new Blob([new Uint8Array([0, 23, 255, 7, 9])], { type: 'image/png' });

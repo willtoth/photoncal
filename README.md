@@ -49,7 +49,7 @@ After capture, a 100 ms cooldown and duplicate-view check prevent repeated saves
 
 ### Saving and recovery
 
-Accepted full-resolution PNG images and metadata are saved to IndexedDB before a capture is marked accepted. Gallery thumbnails are generated lazily, with 12 per page. **Browse saved sessions** restores local work; reconnecting requires confirmation that the physical camera and optics have not changed.
+Browser saving starts with the first accepted capture or imported image. Camera setup, focus checks, and target settings stay in memory until then. Empty sessions are omitted from the saved list; deleting a session’s last image removes its saved entry. Accepted full-resolution PNG images and metadata are saved to IndexedDB before a capture is marked accepted. Gallery thumbnails are generated lazily, with 12 per page. **Browse saved sessions** restores local work; reconnecting requires confirmation that the physical camera and optics have not changed.
 
 **Save session** produces a ZIP containing `session.json` plus `images/<frame-id>.png`. It preserves original-resolution pixels, detected corner IDs, target settings, inclusion flags, coefficients, residuals, poses, outlier weights, and diagnostics. Import creates a new session atomically. Clearing browser/site storage deletes local sessions, so keep an archive. Browser quotas and private browsing can limit storage; quota failures stop capture without discarding previously saved work.
 
