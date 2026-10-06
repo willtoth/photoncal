@@ -122,8 +122,24 @@ export class Camera {
   async set(key: string, value: string | number) {
     const track = this.stream?.getVideoTracks()[0];
     if (!track) throw new Error('Connect a camera first.');
+    const requested: Record<string, string | number> = { [key]: value };
+    if (key === 'exposureMode' && value === 'manual') {
+      // Chromium's Windows backend commits manual exposure only when a shutter
+      // value accompanies it. Freeze the latest reported value, not the value
+      // cached when the stream was opened while auto exposure was still running.
+      const current = (track.getSettings() as Record<string, any>).exposureTime;
+      const range = (track.getCapabilities?.() as Record<string, any> | undefined)?.exposureTime;
+      if (typeof current === 'number' && Number.isFinite(current)) {
+        requested.exposureTime =
+          Number.isFinite(range?.min) && Number.isFinite(range?.max)
+            ? Math.max(range.min, Math.min(range.max, current))
+            : current;
+      }
+    } else if (key === 'exposureTime') {
+      requested.exposureMode = 'manual';
+    }
     // Keep the selected resolution/FPS and no-resizing constraint when adjusting controls.
-    await track.applyConstraints({ ...this.constraints, advanced: [{ [key]: value }] });
+    await track.applyConstraints({ ...this.constraints, advanced: [requested] });
     this.settings = track.getSettings();
     this.capabilities = track.getCapabilities?.() ?? {};
     const actual = this.settings[key];
@@ -133,7 +149,13 @@ export class Camera {
         ? actual !== value
         : Math.abs(actual - value) > (this.capabilities[key]?.step || 0.001))
     )
-      throw new Error(`The camera did not apply ${key}. Its current value is ${actual}.`);
+      throw new Error(
+        `The camera did not apply ${cameraControlDefinitions.find((c) => c.key === key)?.label.toLowerCase() ?? key} (${value}). Its current value is ${actual}.`,
+      );
+    if (key === 'exposureTime' && this.settings.exposureMode !== 'manual')
+      throw new Error(
+        'The camera did not enable manual exposure. Try changing exposure mode again.',
+      );
   }
   stop() {
     this.generation++;

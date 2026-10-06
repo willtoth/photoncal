@@ -456,6 +456,15 @@ details > label {
   gap: 18px;
   min-width: 0;
 }
+.workspace.workspace-wide {
+  grid-template-columns: minmax(0, 1fr);
+}
+.workspace-results .metric-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.workspace-results .diagnostic-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
 .panel {
   background: #fff;
   border: 1px solid var(--border);
@@ -507,6 +516,16 @@ details > label {
 }
 .camera-check-details summary {
   margin-bottom: 8px;
+}
+.camera-controls {
+  grid-column: 1 / -1;
+}
+.camera-controls > summary {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.2px;
 }
 .camera-control:first-child {
   margin-top: 16px;
@@ -923,6 +942,12 @@ details > label {
 }
 .capture-checklist li {
   margin-bottom: 5px;
+}
+.capture-steadiness {
+  margin-top: 18px;
+}
+.capture-steadiness p {
+  margin-top: 8px;
 }
 .capture-toolbar {
   display: flex;

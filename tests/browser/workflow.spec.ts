@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
+import { simulatedCameras } from './camera-fixture';
 const images = Array.from({ length: 12 }, (_, i) =>
   path.resolve(`.build/fixtures/img${i * 10}.png`),
 );
@@ -16,6 +17,17 @@ test('real board images → native WASM solve → diagnostics → PhotonVision e
   page,
   baseURL,
 }, testInfo) => {
+  await simulatedCameras(page, true, true);
+  await page.addInitScript(() => {
+    // Hold one real solve request long enough to exercise controls during calibration.
+    const send = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (message: any, options?: any) {
+      if (message.op === 'solve' && (window as any).holdNextSolve) {
+        (window as any).holdNextSolve = false;
+        (window as any).releaseSolve = () => send.call(this, message, options);
+      } else send.call(this, message, options);
+    };
+  });
   const errors: string[] = [],
     remote: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -79,15 +91,87 @@ test('real board images → native WASM solve → diagnostics → PhotonVision e
   await expect(page.getByText('Results need updating', { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
   expect(remote).toEqual([]);
+  // Reuse the solved, real-image dataset as a saved camera session fixture.
+  // This checks Results controls without replacing the actual WASM solver.
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      const request = indexedDB.open('photoncal');
+      request.onsuccess = () => resolve(request.result);
+    });
+    const tx = db.transaction('sessions', 'readwrite');
+    const request = tx.objectStore('sessions').getAll();
+    request.onsuccess = () => {
+      const session = request.result.find((s: any) => s.result);
+      session.source = 'camera';
+      session.name = session.cameraLabel = 'Camera A';
+      session.settings = { deviceId: 'camera-a', frameRate: 30 };
+      session.frames.forEach((frame: any) => {
+        frame.included = true;
+      });
+      session.revision++;
+      tx.objectStore('sessions').put(session);
+    };
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  });
+  await page.reload();
+  await page.getByRole('button', { name: /Browse saved sessions/ }).click();
+  await page.locator('.saved-sessions button').filter({ hasText: 'Camera A' }).first().click();
+  await page.getByRole('navigation').getByRole('button', { name: 'Capture' }).click();
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Reconnect camera', exact: true }).click();
+  await page.locator('.camera-controls > summary').click();
+  const brightness = page.getByRole('slider', { name: 'Brightness', exact: true });
+  await expect(brightness).toBeEnabled();
+  await page.getByRole('navigation').getByRole('button', { name: 'Results' }).click();
+  await expect(brightness).toBeEnabled();
+  await page.evaluate(() => {
+    (window as any).holdNextSolve = true;
+  });
+  await page.getByRole('button', { name: 'Recalibrate selected images', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Cancel calculation' })).toBeVisible();
+  await expect(brightness).toBeEnabled();
+  await brightness.evaluate((input) => {
+    (input as HTMLInputElement).value = '70';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(
+    page.locator('.camera-control').filter({ has: brightness }).locator('output'),
+  ).toHaveText('70');
+  await page.evaluate(() => (window as any).releaseSolve());
+  await expect(downloadButton).toBeEnabled({ timeout: 60_000 });
+  await expect(brightness).toHaveValue('70');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath('results-camera-controls.png'),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
 });
 
-test('live camera focus, stillness capture, duplicate suppression, and full-resolution snapshots', async ({
+test('live capture handles zero media timestamps, handheld movement, and duplicate suppression', async ({
   page,
-}) => {
+}, testInfo) => {
   await page.route('**/test-board.png', (route) =>
     route.fulfill({ path: images[0], contentType: 'image/png' }),
   );
   await page.addInitScript(() => {
+    // Live streams may report mediaTime = 0 for every newly presented frame.
+    // Keep the real callback cadence, frame counter, image, and WASM detector.
+    (window as any).cameraMediaTimeOverride = 0;
+    const requestFrame = HTMLVideoElement.prototype.requestVideoFrameCallback;
+    HTMLVideoElement.prototype.requestVideoFrameCallback = function (callback) {
+      return requestFrame.call(this, (now, metadata) =>
+        callback(now, {
+          ...metadata,
+          mediaTime: (window as any).cameraMediaTimeOverride ?? metadata.mediaTime,
+        }),
+      );
+    };
     // Real browser MediaStream/canvas + real WASM detector; only camera hardware is replaced.
     Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
       value: async (constraints: MediaStreamConstraints) => {
@@ -99,19 +183,37 @@ test('live camera focus, stillness capture, duplicate suppression, and full-reso
         canvas.width = 1280;
         canvas.height = 720;
         const ctx = canvas.getContext('2d')!;
-        let offset = 0;
+        let offset = 0,
+          motionStarted: number | undefined;
+        const drift = () =>
+          motionStarted === undefined ? 0 : (performance.now() - motionStarted) * 0.008;
+        (window as any).startTestMotion = () => {
+          motionStarted = performance.now();
+        };
+        (window as any).stopTestMotion = () => {
+          offset += drift();
+          motionStarted = undefined;
+        };
         (window as any).moveTestBoard = () => {
-          offset = 55;
+          offset += 55;
         };
         const draw = () => {
           ctx.fillStyle = '#888';
           ctx.fillRect(0, 0, 1280, 720);
-          ctx.drawImage(image, offset, 0);
+          ctx.drawImage(image, offset + drift(), 0);
         };
         draw();
         const interval = setInterval(draw, 50),
           stream = canvas.captureStream(20),
           track = stream.getVideoTracks()[0]!;
+        const cameraSettings = {
+          brightness: 50,
+          exposureMode: 'manual',
+          exposureTime: 100,
+          focusMode: 'manual',
+          focusDistance: 25,
+          zoom: 1,
+        };
         Object.defineProperty(track, 'getSettings', {
           value: () => ({
             width: 1280,
@@ -119,9 +221,22 @@ test('live camera focus, stillness capture, duplicate suppression, and full-reso
             frameRate: 20,
             deviceId: 'test-camera',
             resizeMode: 'none',
+            ...cameraSettings,
           }),
         });
-        Object.defineProperty(track, 'getCapabilities', { value: () => ({}) });
+        Object.defineProperty(track, 'getCapabilities', {
+          value: () => ({
+            brightness: { min: 0, max: 100, step: 1 },
+            focusMode: ['manual', 'continuous'],
+            focusDistance: { min: 0, max: 100, step: 1 },
+            zoom: { min: 1, max: 3, step: 0.1 },
+          }),
+        });
+        Object.defineProperty(track, 'applyConstraints', {
+          value: async (constraints: any) => {
+            Object.assign(cameraSettings, constraints.advanced?.[0]);
+          },
+        });
         const stop = track.stop.bind(track);
         track.stop = () => {
           clearInterval(interval);
@@ -149,17 +264,39 @@ test('live camera focus, stillness capture, duplicate suppression, and full-reso
     )
     .toBeGreaterThan(0);
   await page.getByRole('button', { name: 'Focus is set', exact: true }).click();
+  await page.locator('.camera-controls > summary').click();
+  await expect(page.getByRole('slider', { name: 'Focus distance', exact: true })).toBeEnabled();
+  await expect(page.getByRole('slider', { name: 'Zoom', exact: true })).toBeEnabled();
+  const steadiness = page.getByRole('combobox', { name: 'Capture steadiness', exact: true });
+  await expect(steadiness).toHaveValue('handheld');
+  await steadiness.selectOption('strict');
+  await page.evaluate(() => (window as any).startTestMotion());
   await page.getByRole('switch', { name: 'Automatic capture' }).click();
+  await page.waitForTimeout(1000);
+  await expect(page.locator('.gallery .count')).toHaveText('0');
+  await steadiness.selectOption('handheld');
   await expect(page.locator('.gallery .count')).toHaveText('1', { timeout: 30_000 });
+  await page.evaluate(() => (window as any).stopTestMotion());
+  await expect(page.getByRole('slider', { name: 'Focus distance', exact: true })).toBeDisabled();
+  await expect(page.getByRole('slider', { name: 'Zoom', exact: true })).toBeDisabled();
+  await expect(page.getByRole('slider', { name: 'Brightness', exact: true })).toBeEnabled();
   await expect(
     page.getByText('Move or tilt the board for a different view', { exact: true }),
   ).toBeVisible();
   // The gate must not repeatedly save a stationary board.
   await page.waitForTimeout(1800);
   await expect(page.locator('.gallery .count')).toHaveText('1');
-  await page.evaluate(() => (window as any).moveTestBoard());
+  await page.evaluate(() => {
+    // Switching back to ordinary media timestamps must not affect capture.
+    (window as any).cameraMediaTimeOverride = undefined;
+    (window as any).moveTestBoard();
+  });
   await expect(page.locator('.gallery .count')).toHaveText('2', { timeout: 30_000 });
   await page.getByRole('switch', { name: 'Automatic capture' }).click();
+  await page.screenshot({ path: testInfo.outputPath('handheld-capture.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const saved = await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const r = indexedDB.open('photoncal');

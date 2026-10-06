@@ -2,9 +2,33 @@ import type { Analysis, Corner, Frame } from './types';
 const HOLD_MS = 250;
 const COOLDOWN_MS = 100;
 const MIN_FRAMES = 5;
-// Resolution-normalized, heuristic speed cap. The old 1.5 px / 700 ms
-// displacement window allowed about 2.14 px/s of sustained drift at 640px.
-const MAX_SPEED_AT_640 = 2;
+export type CaptureSteadiness = 'handheld' | 'strict';
+// These are capture heuristics, not measurements of blur or sensor readout.
+const MOTION_AT_640 = {
+  handheld: { displacement: 4, speed: 12 },
+  strict: { displacement: 1.5, speed: 2 },
+};
+const DETECTION_NOISE_AT_640 = 0.25;
+const MAX_EXPOSURE_TRAVEL_PX = 0.5;
+interface CaptureSettings {
+  exposureMode?: string;
+  exposureTime?: number;
+  frameRate?: number;
+}
+function exposureDuration(settings: CaptureSettings): number {
+  if (
+    settings.exposureMode === 'manual' &&
+    Number.isFinite(settings.exposureTime) &&
+    settings.exposureTime! > 0
+  )
+    // MediaStream Image Capture expresses manual exposure in 100 µs units.
+    return settings.exposureTime! / 10000;
+  // Auto-exposure values may be stale. Use a frame period (at least 1/30 s)
+  // as a fallback estimate, not a guarantee about actual exposure or readout.
+  const fps =
+    Number.isFinite(settings.frameRate) && settings.frameRate! > 0 ? settings.frameRate! : 30;
+  return 1 / Math.min(fps, 30);
+}
 interface MotionSample {
   corners: Corner[];
   time: number;
@@ -49,6 +73,7 @@ function commonSpeed(samples: MotionSample[]): number {
   return speeds[Math.floor(speeds.length * 0.8)]!;
 }
 export class AutoCapture {
+  constructor(private steadiness: CaptureSteadiness = 'handheld') {}
   private anchor?: MotionSample;
   private recent: MotionSample[] = [];
   private samples = 0;
@@ -69,17 +94,24 @@ export class AutoCapture {
   reset() {
     this.clearWindow();
     this.previousFrameTime = -Infinity;
+    // Start a fresh timing window, including when reconnecting the camera.
+    this.lastTime = -Infinity;
+  }
+  setSteadiness(value: CaptureSteadiness) {
+    this.steadiness = value;
+    this.reset();
   }
   captured(corners: Corner[], now: number) {
+    this.reset();
     this.lastCapture = corners;
     this.lastTime = now;
     this.departed = false;
-    this.reset();
   }
   update(
     a: Analysis,
     now: number,
     width: number,
+    settings: CaptureSettings = {},
   ): { capture: boolean; progress: number; reason: string } {
     if (now <= this.previousFrameTime)
       return { capture: false, progress: 0, reason: 'Waiting for a new video frame' };
@@ -104,9 +136,14 @@ export class AutoCapture {
       this.clearWindow();
       return { capture: false, progress: 0, reason: 'Move or tilt the board for a different view' };
     }
-    if (!this.anchor || commonDisplacement(this.anchor.corners, a.corners) > (1.5 * width) / 640) {
+    const scale = width / 640;
+    const tolerance = MOTION_AT_640[this.steadiness];
+    if (
+      !this.anchor ||
+      commonDisplacement(this.anchor.corners, a.corners) > tolerance.displacement * scale
+    ) {
       this.startWindow(a.corners, now);
-      return { capture: false, progress: 0, reason: 'Hold the board still' };
+      return { capture: false, progress: 0, reason: 'Pause briefly at this view' };
     }
     this.samples++;
     this.recent.push({ corners: a.corners, time: now });
@@ -117,13 +154,36 @@ export class AutoCapture {
       (this.recent.length > 64 || this.recent[1]!.time <= now - HOLD_MS)
     )
       this.recent.shift();
-    const progress = Math.min(1, (now - this.anchor.time) / HOLD_MS);
+    const progress = Math.min(1, (now - this.anchor.time) / HOLD_MS, this.samples / MIN_FRAMES);
     const capture = progress === 1 && this.samples >= MIN_FRAMES;
-    if (capture && commonSpeed(this.recent) > (MAX_SPEED_AT_640 * width) / 640) {
-      this.startWindow(a.corners, now);
-      return { capture: false, progress: 0, reason: 'Movement detected. Hold the board still.' };
+    if (capture) {
+      const exposureLimit = MAX_EXPOSURE_TRAVEL_PX / exposureDuration(settings);
+      const speedLimit = Math.min(tolerance.speed * scale, exposureLimit);
+      // A fitted velocity alone can average back-and-forth shake to zero.
+      // Check each interval too, allowing for subpixel detector noise.
+      let speed = commonSpeed(this.recent);
+      for (let i = 1; i < this.recent.length; i++) {
+        const previous = this.recent[i - 1]!,
+          current = this.recent[i]!;
+        const travel = Math.max(
+          0,
+          commonDisplacement(previous.corners, current.corners) - DETECTION_NOISE_AT_640 * scale,
+        );
+        speed = Math.max(speed, (travel * 1000) / (current.time - previous.time));
+      }
+      if (speed > speedLimit) {
+        this.startWindow(a.corners, now);
+        return {
+          capture: false,
+          progress: 0,
+          reason:
+            exposureLimit < tolerance.speed * scale
+              ? 'Movement detected. Pause briefly or use a shorter exposure.'
+              : 'Movement detected. Pause briefly at this view.',
+        };
+      }
     }
-    return { capture, progress, reason: capture ? 'Capturing…' : 'Hold still…' };
+    return { capture, progress, reason: capture ? 'Capturing…' : 'Keep this view steady…' };
   }
 }
 export function coverage(

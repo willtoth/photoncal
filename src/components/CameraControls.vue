@@ -13,6 +13,18 @@ const props = withDefaults(
   }>(),
   { checked: true },
 );
+const browserControlsUnavailable = computed(() => {
+  const supported = navigator.mediaDevices?.getSupportedConstraints?.() as
+    | Record<string, boolean>
+    | undefined;
+  return (
+    !!supported &&
+    !cameraControlDefinitions.some(
+      (control) =>
+        (!props.expected || props.expected.includes(control.key)) && supported[control.key],
+    )
+  );
+});
 const unavailable = computed(() =>
   cameraControlDefinitions
     .filter(
@@ -25,15 +37,25 @@ const unavailable = computed(() =>
 const emit = defineEmits<{ change: [string, string | number] }>();
 </script>
 <template>
-  <section class="panel">
-    <h3>Camera controls</h3>
-    <p v-if="!checked" class="small muted">
+  <details class="panel camera-controls">
+    <summary>Camera controls</summary>
+    <p
+      v-if="locked && controls.some((c) => ['focusMode', 'focusDistance', 'zoom'].includes(c.key))"
+      class="small muted"
+    >
+      Focus and zoom are locked for these captures. Start a new calibration to change them.
+    </p>
+    <p v-if="!controls.length && browserControlsUnavailable" class="small muted">
+      This browser does not support camera image controls. Try Chrome or Edge; available controls
+      still depend on your camera and driver.
+    </p>
+    <p v-else-if="!checked" class="small muted">
       Check available settings to see brightness, exposure, and other controls reported by this
       camera.
     </p>
     <p v-else-if="!controls.length" class="small muted">
-      This camera has no adjustable controls in this browser. Use the camera’s software or physical
-      controls.
+      The browser reported no adjustable controls for this camera. Try another browser or the
+      camera’s software.
     </p>
     <p v-else-if="inactive" class="small muted">Start preview to adjust these controls.</p>
     <fieldset :disabled="disabled || inactive">
@@ -79,7 +101,7 @@ const emit = defineEmits<{ change: [string, string | number] }>();
         /></label>
       </div>
     </fieldset>
-    <p v-if="checked && unavailable.length" class="small muted">
+    <p v-if="checked && controls.length && unavailable.length" class="small muted">
       Not adjustable in this browser: {{ unavailable.join(', ') }}.
     </p>
     <p
@@ -88,5 +110,5 @@ const emit = defineEmits<{ change: [string, string | number] }>();
     >
       Shutter and focus sliders require manual mode.
     </p>
-  </section>
+  </details>
 </template>

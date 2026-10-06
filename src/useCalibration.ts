@@ -1,8 +1,8 @@
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { Camera, matchesMode, type CameraMode, type Control } from './core/camera';
 import { discoverCamera, modeKey, type CameraDiscovery } from './core/cameraModes';
 import { EngineClient } from './core/engine';
-import { AutoCapture, coverage, coveragePrompt } from './core/capture';
+import { AutoCapture, coverage, coveragePrompt, type CaptureSteadiness } from './core/capture';
 import {
   newSession,
   currentResult,
@@ -26,6 +26,8 @@ export function useCalibration() {
     deviceId = ref('');
   const connected = ref(false),
     connecting = ref(false),
+    changingControl = ref(false),
+    savingFrame = ref(false),
     controls = ref<Control[]>([]),
     settings = ref<Record<string, any>>({});
   const checkingCamera = ref(false),
@@ -33,7 +35,9 @@ export function useCalibration() {
     cameraDiscovery = ref<CameraDiscovery>(),
     cameraMode = ref('');
   let cameraCheck: AbortController | undefined;
-  const cameraBusy = computed(() => connecting.value || checkingCamera.value);
+  const cameraBusy = computed(
+    () => connecting.value || checkingCamera.value || changingControl.value || savingFrame.value,
+  );
   const selectedCameraMode = computed(() =>
     cameraDiscovery.value?.modes.find((mode) => modeKey(mode) === cameraMode.value),
   );
@@ -51,6 +55,7 @@ export function useCalibration() {
     working = ref(false),
     progress = ref(''),
     auto = ref(false),
+    captureSteadiness = ref<CaptureSteadiness>('handheld'),
     captureProgress = ref(0),
     captureReason = ref('Connect a camera to begin');
   const analysis = ref<Analysis>(),
@@ -72,8 +77,18 @@ export function useCalibration() {
   let loopId = 0,
     loopGeneration = 0,
     operationGeneration = 0,
+    controlGeneration = 0,
     manual = false,
     disposed = false;
+  watch(
+    captureSteadiness,
+    (value) => {
+      gate.setSteadiness(value);
+      captureProgress.value = 0;
+      controlGeneration++;
+    },
+    { flush: 'sync' },
+  );
   const included = computed(() => session.value.frames.filter((f) => f.included));
   const result = computed(() => currentResult(session.value));
   const coverageData = computed(() =>
@@ -261,7 +276,12 @@ export function useCalibration() {
     }
   }
   async function changeControl(key: string, value: string | number) {
-    if (!connected.value || cameraBusy.value || working.value) return;
+    if (!connected.value || cameraBusy.value) return;
+    changingControl.value = true;
+    controlGeneration++;
+    manual = false;
+    gate.reset();
+    captureProgress.value = 0;
     error.value = '';
     try {
       if (session.value.frames.length && ['zoom', 'focusDistance', 'focusMode'].includes(key))
@@ -270,11 +290,22 @@ export function useCalibration() {
       settings.value = { ...camera.settings };
       controls.value = camera.controls();
       session.value.settings = { ...camera.settings };
-      resetFocus();
+      bestFocus.value = 0;
+      focusHistory.value = [];
+      if (['zoom', 'focusDistance', 'focusMode'].includes(key)) {
+        session.value.focusConfirmed = false;
+        if (step.value === 2) {
+          auto.value = false;
+          step.value = 1;
+          notice.value = 'Confirm focus before capturing with the new lens settings.';
+        }
+      }
       await persist();
     } catch (e) {
       settings.value = { ...camera.settings };
       message(e);
+    } finally {
+      changingControl.value = false;
     }
   }
   function startLoop() {
@@ -286,7 +317,12 @@ export function useCalibration() {
     const tick = async (now: number, metadata: VideoFrameCallbackMetadata) => {
       if (disposed || generation !== loopGeneration || !video.value) return;
       try {
-        if (engineState.value !== 'ready' || working.value || step.value === 3) {
+        if (
+          engineState.value !== 'ready' ||
+          working.value ||
+          cameraBusy.value ||
+          step.value === 3
+        ) {
           schedule();
           return;
         }
@@ -294,6 +330,10 @@ export function useCalibration() {
           stopCamera();
           throw new Error('The camera changed resolution. Reconnect before capturing more images.');
         }
+        const frameControlGeneration = controlGeneration;
+        // requestVideoFrameCallback signals a newly presented frame. Live streams
+        // may report mediaTime = 0, so time the gate with the monotonic callback clock.
+        const frameTime = now;
         const bitmap = await createImageBitmap(video.value);
         const a = await vision.call<Analysis & { token: number }>(
           'analyze',
@@ -307,6 +347,10 @@ export function useCalibration() {
           [bitmap],
         );
         if (generation !== loopGeneration) return;
+        if (frameControlGeneration !== controlGeneration) {
+          schedule();
+          return;
+        }
         analysis.value = a;
         if (step.value === 1) {
           const previous = focusHistory.value.at(-1) ?? a.sharpness,
@@ -331,7 +375,7 @@ export function useCalibration() {
           }
         }
         if (step.value === 2) {
-          const status = gate.update(a, now, session.value.width);
+          const status = gate.update(a, frameTime, session.value.width, settings.value);
           captureReason.value = status.reason;
           captureProgress.value = auto.value ? status.progress : 0;
           if ((auto.value && status.capture) || manual) {
@@ -344,24 +388,33 @@ export function useCalibration() {
                 board: { ...session.value.board },
               });
               if (generation !== loopGeneration) return;
-              await storage.addFrame(
-                session.value,
-                {
-                  id: crypto.randomUUID(),
-                  name: `Capture ${session.value.frames.length + 1}`,
-                  capturedAt: Date.now(),
-                  corners: shot.analysis.corners,
-                  included: true,
-                  source: 'camera',
-                  sharpness: shot.analysis.sharpness,
-                },
-                shot.blob,
-              );
-              gate.captured(shot.analysis.corners, now);
-              captureFlash.value = true;
-              setTimeout(() => (captureFlash.value = false), 180);
-              captureReason.value = 'Captured. Move to a new view.';
-              await refreshSessions();
+              if (frameControlGeneration !== controlGeneration) {
+                schedule();
+                return;
+              }
+              savingFrame.value = true;
+              try {
+                await storage.addFrame(
+                  session.value,
+                  {
+                    id: crypto.randomUUID(),
+                    name: `Capture ${session.value.frames.length + 1}`,
+                    capturedAt: Date.now(),
+                    corners: shot.analysis.corners,
+                    included: true,
+                    source: 'camera',
+                    sharpness: shot.analysis.sharpness,
+                  },
+                  shot.blob,
+                );
+                gate.captured(shot.analysis.corners, frameTime);
+                captureFlash.value = true;
+                setTimeout(() => (captureFlash.value = false), 180);
+                captureReason.value = 'Captured. Move to a new view.';
+                await refreshSessions();
+              } finally {
+                savingFrame.value = false;
+              }
             }
           }
         }
@@ -376,7 +429,7 @@ export function useCalibration() {
     schedule();
   }
   function capture() {
-    if (!connected.value || step.value !== 2 || working.value) return;
+    if (!connected.value || step.value !== 2 || working.value || cameraBusy.value) return;
     manual = true;
   }
   function setStep(value: number) {
@@ -789,6 +842,7 @@ export function useCalibration() {
     working,
     progress,
     auto,
+    captureSteadiness,
     captureProgress,
     captureReason,
     analysis,

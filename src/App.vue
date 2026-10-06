@@ -58,6 +58,7 @@ const {
   working,
   progress,
   auto,
+  captureSteadiness,
   captureProgress,
   captureReason,
   analysis,
@@ -339,9 +340,15 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
         {{ Math.round(archiveProgress * 100) }}%
       </div>
 
-      <div v-show="step < 3" class="workspace">
+      <div
+        class="workspace"
+        :class="{
+          'workspace-results': step === 3 && session.source === 'camera',
+          'workspace-wide': step === 3 && session.source === 'import',
+        }"
+      >
         <div class="workspace-main">
-          <section class="preview-panel">
+          <section v-show="step < 3" class="preview-panel">
             <div class="preview-heading">
               <span
                 ><span class="live-dot" :class="{ on: connected }" />{{
@@ -540,7 +547,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                   role="switch"
                   :aria-checked="auto"
                   aria-label="Automatic capture"
-                  :disabled="!connected || working || engineState !== 'ready'"
+                  :disabled="!connected || working || cameraBusy || engineState !== 'ready'"
                   @click="auto = !auto"
                 >
                   <span />
@@ -548,15 +555,15 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 <div>
                   <strong>Automatic capture</strong
                   ><small>{{
-                    auto
-                      ? 'Hold the board still to capture.'
-                      : 'Save each new view when the board is still.'
+                    captureSteadiness === 'handheld'
+                      ? 'Pause briefly at each new view.'
+                      : 'Hold steady at each new view.'
                   }}</small>
                 </div>
               </div>
               <button
                 class="button"
-                :disabled="!connected || working || !analysis?.valid"
+                :disabled="!connected || working || cameraBusy || !analysis?.valid"
                 @click="capture"
               >
                 <CameraIcon :size="17" />Capture now <kbd>Space</kbd>
@@ -597,8 +604,26 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               @remove="deleteFrame"
             />
           </template>
+          <ResultsPanel
+            v-if="step === 3 && session.result"
+            :session="session"
+            :working="working"
+            @download="exportJson"
+            @archive="exportArchive"
+            @capture="setStep(2)"
+            @consistency="consistency"
+            @recalibrate="calibrate"
+          />
+          <FrameGallery
+            v-if="step === 3 && session.frames.length"
+            :session="session"
+            :disabled="working || cameraBusy || archiveProgress !== undefined"
+            @inspect="activeFrame = $event"
+            @toggle="toggleFrame"
+            @remove="deleteFrame"
+          />
         </div>
-        <div class="workspace-side">
+        <div v-if="step < 3 || session.source === 'camera'" class="workspace-side">
           <template v-if="step === 0">
             <section class="panel camera-setup">
               <div class="panel-heading">
@@ -707,15 +732,8 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 <ImagePlus :size="17" />Use saved images
               </button>
             </section>
-            <CameraControls
-              :controls="controls"
-              :settings="settings"
-              :locked="!!session.frames.length"
-              :checked="!!cameraDiscovery || connected"
-              :inactive="!connected"
-              :disabled="working || cameraBusy"
-              @change="changeControl"
-            />
+          </template>
+          <template v-if="step === 0">
             <section v-if="connected" class="panel">
               <h3>Camera details</h3>
               <dl class="camera-details">
@@ -778,20 +796,6 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 >Why edge focus matters</a
               >
             </section>
-            <CameraControls
-              :controls="
-                controls.filter((c) =>
-                  ['focusMode', 'focusDistance', 'exposureMode', 'exposureTime'].includes(c.key),
-                )
-              "
-              :settings="settings"
-              :locked="!!session.frames.length"
-              :expected="['focusMode', 'focusDistance', 'exposureMode', 'exposureTime']"
-              :checked="!!cameraDiscovery || connected"
-              :inactive="!connected"
-              :disabled="working || cameraBusy"
-              @change="changeControl"
-            />
             <div
               v-if="!controls.some((c) => ['focusMode', 'focusDistance'].includes(c.key))"
               class="tip-strip small"
@@ -839,6 +843,19 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 rel="noopener"
                 >mrcal capture guidance</a
               >
+              <div v-if="session.source === 'camera'" class="capture-steadiness">
+                <label
+                  >Capture steadiness
+                  <select v-model="captureSteadiness" :disabled="working || cameraBusy">
+                    <option value="handheld">Handheld</option>
+                    <option value="strict">Strict</option>
+                  </select>
+                </label>
+                <p class="small muted">
+                  Handheld allows small movements. Strict requires a steadier view. Shorter exposure
+                  helps reduce motion blur.
+                </p>
+              </div>
               <details>
                 <summary>Advanced solve settings</summary>
                 <label
@@ -867,26 +884,18 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               <ImagePlus :size="17" />Add more images
             </button></template
           >
+          <CameraControls
+            v-if="session.source === 'camera'"
+            :controls="controls"
+            :settings="settings"
+            :locked="!!session.frames.length"
+            :checked="!!cameraDiscovery || connected"
+            :inactive="!connected"
+            :disabled="cameraBusy"
+            @change="changeControl"
+          />
         </div>
       </div>
-      <ResultsPanel
-        v-if="step === 3 && session.result"
-        :session="session"
-        :working="working"
-        @download="exportJson"
-        @archive="exportArchive"
-        @capture="setStep(2)"
-        @consistency="consistency"
-        @recalibrate="calibrate"
-      />
-      <FrameGallery
-        v-if="step === 3 && session.frames.length"
-        :session="session"
-        :disabled="working || cameraBusy || archiveProgress !== undefined"
-        @inspect="activeFrame = $event"
-        @toggle="toggleFrame"
-        @remove="deleteFrame"
-      />
       <footer v-if="step < 3" class="workflow-footer">
         <span v-if="step === 1" class="small muted"
           >Confirm that focus and zoom will stay fixed.</span
@@ -907,7 +916,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
         ><button
           v-if="step === 1"
           class="button primary"
-          :disabled="!connected || working"
+          :disabled="!connected || working || cameraBusy"
           @click="confirmFocus"
         >
           Focus is set<ChevronRight :size="17" /></button

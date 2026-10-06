@@ -1,105 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
-
-async function simulatedCameras(page: Page) {
-  await page.addInitScript(() => {
-    const state = ((window as any).cameraTest = {
-      tracks: [] as MediaStreamTrack[],
-      requests: [] as any[],
-      adjustments: [] as any[],
-      pauseCheck: false,
-      releaseCheck: undefined as (() => void) | undefined,
-    });
-    const devices = [
-      { deviceId: 'camera-a', kind: 'videoinput', label: 'Camera A', groupId: 'a' },
-      { deviceId: 'camera-b', kind: 'videoinput', label: 'Camera B', groupId: 'b' },
-    ];
-    Object.defineProperty(navigator.mediaDevices, 'enumerateDevices', {
-      value: async () => devices,
-    });
-    Object.defineProperty(navigator.mediaDevices, 'getSupportedConstraints', {
-      value: () => ({
-        width: true,
-        height: true,
-        frameRate: true,
-        deviceId: true,
-        resizeMode: true,
-      }),
-    });
-    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
-      value: async ({ video }: any) => {
-        state.requests.push(video);
-        const deviceId = video.deviceId?.exact ?? 'camera-a';
-        const modes =
-          deviceId === 'camera-a'
-            ? [
-                { width: 1280, height: 720, frameRate: 30 },
-                { width: 640, height: 480, frameRate: 60 },
-              ]
-            : [{ width: 800, height: 600, frameRate: 15 }];
-        const select = (constraints: any) => {
-          const mode = modes.find(
-            (mode) =>
-              (!constraints.width || constraints.width.exact === mode.width) &&
-              (!constraints.height || constraints.height.exact === mode.height) &&
-              (!constraints.frameRate || constraints.frameRate.exact === mode.frameRate),
-          );
-          if (!mode) throw new DOMException('Unsupported pair', 'OverconstrainedError');
-          return mode;
-        };
-        let settings: Record<string, any> = {
-          ...select(video),
-          deviceId,
-          resizeMode: 'none',
-          ...(deviceId === 'camera-a' ? { brightness: 50 } : {}),
-        };
-        const canvas = document.createElement('canvas');
-        const draw = () => {
-          canvas.width = settings.width;
-          canvas.height = settings.height;
-          const ctx = canvas.getContext('2d')!;
-          ctx.fillStyle = '#888';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-        };
-        draw();
-        const stream = canvas.captureStream(settings.frameRate);
-        const track = stream.getVideoTracks()[0]!;
-        const timer = setInterval(draw, 30);
-        state.tracks.push(track);
-        Object.defineProperty(track, 'label', {
-          value: devices.find((d) => d.deviceId === deviceId)!.label,
-        });
-        Object.defineProperty(track, 'getSettings', { value: () => ({ ...settings }) });
-        Object.defineProperty(track, 'getCapabilities', {
-          value: () => ({
-            width: { min: 640, max: 1280 },
-            height: { min: 480, max: 720 },
-            frameRate: { min: 15, max: 60 },
-            ...(deviceId === 'camera-a' ? { brightness: { min: 0, max: 100, step: 1 } } : {}),
-          }),
-        });
-        Object.defineProperty(track, 'applyConstraints', {
-          value: async (constraints: any) => {
-            if (state.pauseCheck) {
-              state.pauseCheck = false;
-              await new Promise<void>((resolve) => {
-                state.releaseCheck = resolve;
-              });
-            }
-            state.adjustments.push(constraints);
-            settings = { ...settings, ...select(constraints), ...constraints.advanced?.[0] };
-            draw();
-          },
-        });
-        const stop = track.stop.bind(track);
-        track.stop = () => {
-          clearInterval(timer);
-          stop();
-        };
-        return stream;
-      },
-    });
-  });
-}
+import { test, expect } from '@playwright/test';
+import { simulatedCameras } from './camera-fixture';
 
 test('checks pairs before preview, preserves active settings until restart, and resets on device change', async ({
   page,
@@ -116,6 +16,7 @@ test('checks pairs before preview, preserves active settings until restart, and 
     '640 × 480 · 60 fps',
     '1280 × 720 · 30 fps',
   ]);
+  await page.locator('.camera-controls > summary').click();
   await expect(brightness).toBeDisabled();
   expect(
     await page.evaluate(() =>
@@ -165,13 +66,119 @@ test('checks pairs before preview, preserves active settings until restart, and 
   ).toBe(true);
   await setup.getByRole('button', { name: 'Check available settings', exact: true }).click();
   await expect(selection.locator('option')).toHaveText(['800 × 600 · 15 fps']);
-  await expect(page.getByText(/Not adjustable in this browser:/)).toContainText('brightness');
+  await expect(page.getByText(/The browser reported no adjustable controls/)).toBeVisible();
+  await expect(page.getByText(/Not adjustable in this browser:/)).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
     path: testInfo.outputPath('camera-settings-mobile.png'),
     fullPage: true,
   });
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+});
+
+test('explains missing browser control support before access and still allows preview', async ({
+  page,
+}) => {
+  await simulatedCameras(page, false);
+  await page.goto('/');
+  const setup = page.locator('.camera-setup');
+  const explanation = page.getByText(/This browser does not support camera image controls/);
+  await page.locator('.camera-controls > summary').click();
+  await expect(explanation).toBeVisible();
+  await expect(explanation).toContainText('Try Chrome or Edge');
+  expect(await page.evaluate(() => (window as any).cameraTest.requests)).toHaveLength(0);
+  await setup.getByRole('combobox', { name: 'Camera', exact: true }).selectOption('camera-b');
+  await setup.getByRole('button', { name: 'Check available settings', exact: true }).click();
+  await setup.getByRole('button', { name: 'Start preview', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Continue to focus', exact: true })).toBeEnabled();
+  await expect(explanation).toBeVisible();
+  await expect(page.getByText(/Not adjustable in this browser:/)).toHaveCount(0);
+  await expect(page.getByText(/The browser reported no adjustable controls/)).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('manual exposure stays selected, unlocks the shutter, and reports driver rejection', async ({
+  page,
+}, testInfo) => {
+  await simulatedCameras(page, true, true);
+  await page.goto('/');
+  const setup = page.locator('.camera-setup');
+  await setup.getByRole('button', { name: 'Check available settings', exact: true }).click();
+  await setup.getByRole('button', { name: 'Start preview', exact: true }).click();
+  const exposureMode = page.getByRole('combobox', { name: 'Exposure mode', exact: true });
+  const shutter = page.getByRole('slider', { name: 'Shutter / exposure', exact: true });
+  const controlsToggle = page.locator('.camera-controls > summary');
+  await expect(exposureMode).toBeHidden();
+  await controlsToggle.click();
+  await expect(exposureMode).toHaveValue('continuous');
+  await expect(shutter).toBeDisabled();
+  await exposureMode.selectOption('manual');
+  await expect(shutter).toBeEnabled();
+  await expect(exposureMode).toHaveValue('manual');
+  await expect(shutter).toHaveValue('100');
+  await shutter.evaluate((input) => {
+    (input as HTMLInputElement).value = '50';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(
+    page.locator('.camera-control').filter({ has: shutter }).locator('output'),
+  ).toHaveText('50 100 µs');
+  await expect(exposureMode).toHaveValue('manual');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.locator('.camera-details')).toContainText('1280 × 720 · 30 fps');
+  const brightness = page.getByRole('slider', { name: 'Brightness', exact: true });
+  await page.getByRole('button', { name: 'Continue to focus', exact: true }).click();
+  await expect(exposureMode).toHaveValue('manual');
+  await expect(shutter).toHaveValue('50');
+  await expect(brightness).toBeEnabled();
+  await brightness.evaluate((input) => {
+    (input as HTMLInputElement).value = '65';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(
+    page.locator('.camera-control').filter({ has: brightness }).locator('output'),
+  ).toHaveText('65');
+  await page.screenshot({ path: testInfo.outputPath('focus-camera-controls.png'), fullPage: true });
+  await controlsToggle.focus();
+  await controlsToggle.press('Enter');
+  await page.getByRole('button', { name: 'Focus is set', exact: true }).click();
+  await expect(exposureMode).toBeHidden();
+  await page.screenshot({
+    path: testInfo.outputPath('capture-controls-collapsed.png'),
+    fullPage: true,
+  });
+  await controlsToggle.click();
+  await expect(brightness).toHaveValue('65');
+  await shutter.evaluate((input) => {
+    (input as HTMLInputElement).value = '75';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(
+    page.locator('.camera-control').filter({ has: shutter }).locator('output'),
+  ).toHaveText('75 100 µs');
+  await page.getByRole('navigation').getByRole('button', { name: 'Camera', exact: false }).click();
+  await page.getByRole('navigation').getByRole('button', { name: 'Capture', exact: false }).click();
+  await expect(page.getByRole('heading', { name: 'Capture images', exact: true })).toBeVisible();
+  await expect(shutter).toHaveValue('75');
+  await expect(exposureMode).toHaveValue('manual');
+  expect(await page.evaluate(() => (window as any).cameraTest.requests)).toHaveLength(2);
+  await page.getByRole('slider', { name: 'Focus distance', exact: true }).evaluate((input) => {
+    (input as HTMLInputElement).value = '30';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(page.getByRole('heading', { name: 'Adjust focus', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Focus is set', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Capture images', exact: true })).toBeVisible();
+  await exposureMode.selectOption('continuous');
+  await expect(shutter).toBeDisabled();
+  await expect(exposureMode).toHaveValue('continuous');
+  await page.evaluate(() => {
+    (window as any).cameraTest.rejectExposure = true;
+  });
+  await exposureMode.selectOption('manual');
+  await expect(page.getByRole('alert')).toContainText('did not apply exposure mode (manual)');
+  await expect(exposureMode).toHaveValue('continuous');
+  await expect(shutter).toBeDisabled();
 });
 
 test('cancelling a check releases the camera and a late result cannot replace a new check', async ({

@@ -2,13 +2,16 @@ import { it, expect, vi, afterEach } from 'vitest';
 import { Camera } from '../../src/core/camera';
 afterEach(() => vi.unstubAllGlobals());
 const mode = { width: 1280, height: 720, frameRate: 30 };
-function media(settings: Record<string, any> = { ...mode }) {
+function media(
+  settings: Record<string, any> = { ...mode },
+  capabilities: Record<string, any> = { brightness: { min: 0, max: 255, step: 1 } },
+) {
   const track = {
-    getSettings: () => settings,
-    getCapabilities: () => ({ brightness: { min: 0, max: 255, step: 1 } }),
+    getSettings: () => ({ ...settings }),
+    getCapabilities: () => capabilities,
     stop: vi.fn(),
     onended: null,
-    applyConstraints: vi.fn(async () => {}),
+    applyConstraints: vi.fn(async (_constraints: any) => {}),
   };
   const stream = { getVideoTracks: () => [track], getTracks: () => [track] };
   const getUserMedia = vi.fn(async (_constraints: any) => stream);
@@ -81,4 +84,34 @@ it('opens legacy sessions without inventing an unreported frame rate', async () 
   const m = media({ width: 1280, height: 720 });
   await new Camera().connect('usb1', { width: 1280, height: 720 });
   expect(m.getUserMedia.mock.calls[0]?.[0]).not.toHaveProperty('video.frameRate');
+});
+
+it('switches to manual exposure on cameras that require a shutter value with the mode', async () => {
+  const settings = { ...mode, exposureMode: 'continuous', exposureTime: 100 };
+  const m = media(settings, {
+    exposureMode: ['manual', 'continuous'],
+    exposureTime: { min: 10, max: 1000, step: 5 },
+  });
+  // Chromium's Windows backend only commits manual mode to the device when
+  // an exposure time is supplied. A mode-only request resolves without changing it.
+  m.track.applyConstraints.mockImplementation(async ({ advanced }) => {
+    const control = advanced[0];
+    if (control.exposureMode === 'continuous') settings.exposureMode = 'continuous';
+    if (control.exposureMode === 'manual' && typeof control.exposureTime === 'number') {
+      settings.exposureMode = 'manual';
+      settings.exposureTime = control.exposureTime;
+    }
+  });
+  const camera = new Camera();
+  await camera.connect('usb1', mode);
+  // Auto exposure may have changed since the camera was opened.
+  settings.exposureTime = 200;
+  await camera.set('exposureMode', 'manual');
+  expect(camera.settings.exposureMode).toBe('manual');
+  expect(camera.settings.exposureTime).toBe(200);
+  await camera.set('exposureTime', 50);
+  expect(camera.settings.exposureMode).toBe('manual');
+  expect(camera.settings.exposureTime).toBe(50);
+  await camera.set('exposureMode', 'continuous');
+  expect(camera.settings.exposureMode).toBe('continuous');
 });
