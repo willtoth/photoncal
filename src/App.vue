@@ -931,7 +931,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
           <a href="./LICENSE.txt" target="_blank" rel="noopener">GPL-3.0-or-later</a></span
         >
         <span
-          ><a href="./source/photoncal-source.tar.gz">Source code</a> ·
+          ><a href="https://github.com/willtoth/photoncal">Source code</a> ·
           <a href="./THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener">Notices</a></span
         >
       </div>
