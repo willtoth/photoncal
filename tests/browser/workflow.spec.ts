@@ -57,6 +57,30 @@ test('real board images → native WASM solve → diagnostics → PhotonVision e
   });
   await expect(downloadButton).toBeEnabled({ timeout: 60_000 });
   await expect(page.getByText('Projection uncertainty', { exact: true })).toBeVisible();
+  const scene = page.locator('.calibration-scene');
+  await expect(scene.getByText('12 solved poses', { exact: true })).toBeVisible();
+  await expect(scene.getByRole('button', { name: 'Reset 3D view' })).toBeEnabled();
+  await expect(scene.locator('.scene-error')).toHaveCount(0);
+  const surface = scene.locator('canvas');
+  const beforeOrbit = await surface.screenshot();
+  const box = (await surface.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2 + 40, { steps: 5 });
+  await page.mouse.up();
+  expect(beforeOrbit.equals(await surface.screenshot())).toBe(false);
+  await scene.getByRole('combobox', { name: '3D capture' }).selectOption({ index: 1 });
+  await expect(scene).toContainText('accepted /');
+  await scene.getByRole('button', { name: 'Inspect selected image' }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: 'Close image', exact: true }).click();
+  await scene.getByRole('button', { name: 'Camera view', exact: true }).click();
+  await scene.getByRole('button', { name: 'Zoom in 3D' }).click();
+  await scene.getByRole('checkbox', { name: 'Camera frustum' }).uncheck();
+  await scene.getByRole('button', { name: 'Reset 3D view' }).click();
+  await scene.getByRole('checkbox', { name: 'Camera frustum' }).check();
+  await scene.getByRole('combobox', { name: '3D capture' }).selectOption('');
+  await scene.screenshot({ path: testInfo.outputPath('calibration-3d.png') });
   expect(await page.locator('.metric').first().textContent()).not.toContain('NaN');
   await page.screenshot({ path: testInfo.outputPath('results.png'), fullPage: true });
   const filePromise = page.waitForEvent('download');
@@ -95,6 +119,7 @@ test('real board images → native WASM solve → diagnostics → PhotonVision e
   await page.locator('.frame-thumb input[type=checkbox]').first().uncheck();
   await expect(downloadButton).toBeDisabled();
   await expect(page.getByText('Results need updating', { exact: true })).toBeVisible();
+  await expect(scene).toContainText('Recalibrate to show poses');
   expect(errors).toEqual([]);
   expect(remote).toEqual([]);
   // Reuse the solved, real-image dataset as a saved camera session fixture.
@@ -129,7 +154,6 @@ test('real board images → native WASM solve → diagnostics → PhotonVision e
   await page.getByRole('navigation').getByRole('button', { name: 'Capture' }).click();
   page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: 'Reconnect camera', exact: true }).click();
-  await page.locator('.camera-controls > summary').click();
   const brightness = page.getByRole('slider', { name: 'Brightness', exact: true });
   await expect(brightness).toBeEnabled();
   await page.getByRole('navigation').getByRole('button', { name: 'Results' }).click();
@@ -151,12 +175,41 @@ test('real board images → native WASM solve → diagnostics → PhotonVision e
   await expect(downloadButton).toBeEnabled({ timeout: 60_000 });
   await expect(brightness).toHaveValue('70');
   await expect(page.getByRole('alert')).toHaveCount(0);
+  const exported = async () => {
+    const pending = page.waitForEvent('download');
+    await downloadButton.click();
+    const download = await pending;
+    return JSON.parse(await readFile((await download.path())!, 'utf8'));
+  };
+  const beforeRotation = await exported();
+  await page.getByRole('button', { name: 'Rotate preview 180°' }).click();
+  expect(await exported()).toEqual(beforeRotation);
+
   await page.screenshot({
     path: testInfo.outputPath('results-camera-controls.png'),
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  // Missing graphics support must not break calibration exports.
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (
+      this: HTMLCanvasElement,
+      type: string,
+      ...args: any[]
+    ) {
+      if (type.includes('webgl')) return null;
+      return (original as Function).apply(this, [type, ...args]);
+    } as typeof original;
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.reload();
+  await page.getByRole('button', { name: /Browse saved sessions/ }).click();
+  await page.locator('.saved-sessions button').filter({ hasText: 'Camera A' }).first().click();
+  await expect(scene).toContainText('3D rendering is unavailable');
+  expect(await exported()).toEqual(beforeRotation);
+  expect(errors).toEqual([]);
 });
 
 test('live capture handles zero media timestamps, handheld movement, and duplicate suppression', async ({
@@ -270,7 +323,6 @@ test('live capture handles zero media timestamps, handheld movement, and duplica
     )
     .toBeGreaterThan(0);
   await page.getByRole('button', { name: 'Focus is set', exact: true }).click();
-  await page.locator('.camera-controls > summary').click();
   await expect(page.getByRole('slider', { name: 'Focus distance', exact: true })).toBeEnabled();
   await expect(page.getByRole('slider', { name: 'Zoom', exact: true })).toBeEnabled();
   const steadiness = page.getByRole('combobox', { name: 'Capture steadiness', exact: true });

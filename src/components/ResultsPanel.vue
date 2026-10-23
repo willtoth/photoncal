@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, defineAsyncComponent } from 'vue';
 import type { Session } from '../core/types';
 import { currentResult } from '../core/types';
 import { coverage } from '../core/capture';
 import { Download, Archive, ScanLine, AlertTriangle } from 'lucide-vue-next';
 import DiagnosticPlot from './DiagnosticPlot.vue';
+const CalibrationScene = defineAsyncComponent(() => import('./CalibrationScene.vue'));
 const props = defineProps<{ session: Session; working: boolean }>();
 const emit = defineEmits<{
   download: [];
@@ -12,6 +13,7 @@ const emit = defineEmits<{
   capture: [];
   consistency: [];
   recalibrate: [];
+  inspect: [string];
 }>();
 const result = computed(() => props.session.result),
   fresh = computed(() => !!currentResult(props.session));
@@ -83,6 +85,7 @@ const uncertainty95 = computed(() => {
     <div v-if="issues.length" class="findings">
       <p v-for="issue in issues" :key="issue"><AlertTriangle :size="16" />{{ issue }}</p>
     </div>
+    <CalibrationScene :session="session" @inspect="emit('inspect', $event)" />
     <div class="diagnostic-grid">
       <section class="panel">
         <div class="panel-heading">

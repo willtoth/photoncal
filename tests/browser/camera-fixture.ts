@@ -1,8 +1,17 @@
 import type { Page } from '@playwright/test';
 
-export async function simulatedCameras(page: Page, imageControls = true, exposureControls = false) {
+export async function simulatedCameras(
+  page: Page,
+  imageControls = true,
+  exposureControls = false,
+  options: { boardImage?: string; windowsExposure?: boolean } = {},
+) {
   await page.addInitScript(
-    ({ imageControls, exposureControls }) => {
+    ({ imageControls, exposureControls, options }) => {
+      if (options.windowsExposure)
+        Object.defineProperty(navigator, 'userAgent', {
+          value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0.0.0',
+        });
       const state = ((window as any).cameraTest = {
         tracks: [] as MediaStreamTrack[],
         requests: [] as any[],
@@ -10,6 +19,9 @@ export async function simulatedCameras(page: Page, imageControls = true, exposur
         pauseCheck: false,
         releaseCheck: undefined as (() => void) | undefined,
         rejectExposure: false,
+        offsetX: 0,
+        showBoard: true,
+        velocity: 0,
       });
       const devices = [
         { deviceId: 'camera-a', kind: 'videoinput', label: 'Camera A', groupId: 'a' },
@@ -57,13 +69,19 @@ export async function simulatedCameras(page: Page, imageControls = true, exposur
             ...(deviceId === 'camera-a' && exposureControls
               ? {
                   exposureMode: 'continuous',
-                  exposureTime: 100,
+                  exposureTime: options.windowsExposure ? 10000 / 128 : 100,
                   focusMode: 'manual',
                   focusDistance: 25,
                   zoom: 1,
                 }
               : {}),
           };
+          const board = options.boardImage ? new Image() : undefined;
+          if (board) {
+            board.src = options.boardImage!;
+            await board.decode();
+          }
+          const started = performance.now();
           const canvas = document.createElement('canvas');
           const draw = () => {
             canvas.width = settings.width;
@@ -71,6 +89,14 @@ export async function simulatedCameras(page: Page, imageControls = true, exposur
             const ctx = canvas.getContext('2d')!;
             ctx.fillStyle = '#888';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
+            if (board && state.showBoard)
+              ctx.drawImage(
+                board,
+                state.offsetX + (state.velocity * (performance.now() - started)) / 1000,
+                0,
+                canvas.width,
+                canvas.height,
+              );
           };
           draw();
           const stream = canvas.captureStream(settings.frameRate);
@@ -90,7 +116,9 @@ export async function simulatedCameras(page: Page, imageControls = true, exposur
               ...(deviceId === 'camera-a' && exposureControls
                 ? {
                     exposureMode: ['continuous', 'manual'],
-                    exposureTime: { min: 10, max: 1000, step: 5 },
+                    exposureTime: options.windowsExposure
+                      ? { min: 10000 / 4096, max: 10000, step: 10000 / 4096 }
+                      : { min: 10, max: 1000, step: 5 },
                     focusMode: ['manual', 'continuous'],
                     focusDistance: { min: 0, max: 100, step: 1 },
                     zoom: { min: 1, max: 3, step: 0.1 },
@@ -119,6 +147,9 @@ export async function simulatedCameras(page: Page, imageControls = true, exposur
                   delete control.exposureTime;
                 }
               }
+              if (options.windowsExposure && control.exposureTime > 0)
+                control.exposureTime =
+                  10000 * Math.pow(2, Math.trunc(Math.log2(control.exposureTime / 10000)));
               settings = { ...settings, ...select(constraints), ...control };
               draw();
             },
@@ -132,6 +163,6 @@ export async function simulatedCameras(page: Page, imageControls = true, exposur
         },
       });
     },
-    { imageControls, exposureControls },
+    { imageControls, exposureControls, options },
   );
 }

@@ -1,13 +1,30 @@
 import type { Analysis, Corner, Frame } from './types';
+import { exposureSeconds } from './exposure';
+export type CaptureMode = 'manual' | 'auto' | 'timer';
+export class CaptureTimer {
+  deadline = Infinity;
+  restart(now: number, seconds: number) {
+    this.deadline = now + seconds * 1000;
+  }
+  stop() {
+    this.deadline = Infinity;
+  }
+  due(frameTime: number) {
+    return frameTime >= this.deadline;
+  }
+  remaining(now: number) {
+    return Math.max(0, Math.ceil((this.deadline - now) / 1000));
+  }
+}
+export function duplicateView(previous: Corner[], corners: Corner[], width: number) {
+  return previous.length > 0 && commonDisplacement(previous, corners) < width * 0.025;
+}
 const HOLD_MS = 250;
-const COOLDOWN_MS = 100;
+const COOLDOWN_MS = 750;
 const MIN_FRAMES = 5;
 export type CaptureSteadiness = 'handheld' | 'strict';
 // These are capture heuristics, not measurements of blur or sensor readout.
-const MOTION_AT_640 = {
-  handheld: { displacement: 4, speed: 12 },
-  strict: { displacement: 1.5, speed: 2 },
-};
+const STRICT_MOTION_AT_640 = { displacement: 1.5, speed: 2 };
 const DETECTION_NOISE_AT_640 = 0.25;
 const MAX_EXPOSURE_TRAVEL_PX = 0.5;
 interface CaptureSettings {
@@ -22,7 +39,7 @@ function exposureDuration(settings: CaptureSettings): number {
     settings.exposureTime! > 0
   )
     // MediaStream Image Capture expresses manual exposure in 100 µs units.
-    return settings.exposureTime! / 10000;
+    return exposureSeconds(settings.exposureTime!);
   // Auto-exposure values may be stale. Use a frame period (at least 1/30 s)
   // as a fallback estimate, not a guarantee about actual exposure or readout.
   const fps =
@@ -80,7 +97,7 @@ export class AutoCapture {
   private lastTime = -Infinity;
   private previousFrameTime = -Infinity;
   private lastCapture: Corner[] = [];
-  private departed = false;
+
   private clearWindow() {
     this.anchor = undefined;
     this.recent = [];
@@ -91,11 +108,14 @@ export class AutoCapture {
     this.recent = [this.anchor];
     this.samples = 1;
   }
-  reset() {
+  reset(all = false) {
+    if (all) {
+      this.lastCapture = [];
+      this.lastTime = -Infinity;
+    }
     this.clearWindow();
     this.previousFrameTime = -Infinity;
-    // Start a fresh timing window, including when reconnecting the camera.
-    this.lastTime = -Infinity;
+    // Settings changes restart motion qualification, but retain the save cooldown.
   }
   setSteadiness(value: CaptureSteadiness) {
     this.steadiness = value;
@@ -105,7 +125,6 @@ export class AutoCapture {
     this.reset();
     this.lastCapture = corners;
     this.lastTime = now;
-    this.departed = false;
   }
   update(
     a: Analysis,
@@ -113,52 +132,59 @@ export class AutoCapture {
     width: number,
     settings: CaptureSettings = {},
   ): { capture: boolean; progress: number; reason: string } {
+    if (this.previousFrameTime === -Infinity && now < this.lastTime) this.lastTime = -Infinity;
     if (now <= this.previousFrameTime)
       return { capture: false, progress: 0, reason: 'Waiting for a new video frame' };
-    if (now - this.previousFrameTime > 500) {
+    if (now - this.previousFrameTime > (this.steadiness === 'handheld' ? 1000 : 500)) {
       this.clearWindow();
     }
     this.previousFrameTime = now;
     if (!a.valid) {
       this.clearWindow();
-      this.departed = true;
+
       return { capture: false, progress: 0, reason: a.reason };
     }
     if (now - this.lastTime < COOLDOWN_MS) {
       this.clearWindow();
       return { capture: false, progress: 0, reason: 'Captured. Move to a new view.' };
     }
-    if (
-      !this.departed &&
-      this.lastCapture.length &&
-      commonDisplacement(this.lastCapture, a.corners) < width * 0.025
-    ) {
+    if (duplicateView(this.lastCapture, a.corners, width)) {
       this.clearWindow();
       return { capture: false, progress: 0, reason: 'Move or tilt the board for a different view' };
     }
+    const handheld = this.steadiness === 'handheld';
+    const holdMs = handheld ? 100 : HOLD_MS;
+    const minFrames = handheld ? 3 : MIN_FRAMES;
     const scale = width / 640;
-    const tolerance = MOTION_AT_640[this.steadiness];
+    const tolerance = STRICT_MOTION_AT_640;
     if (
       !this.anchor ||
-      commonDisplacement(this.anchor.corners, a.corners) > tolerance.displacement * scale
+      (!handheld &&
+        commonDisplacement(this.anchor.corners, a.corners) > tolerance.displacement * scale)
     ) {
       this.startWindow(a.corners, now);
-      return { capture: false, progress: 0, reason: 'Pause briefly at this view' };
+      return {
+        capture: false,
+        progress: 0,
+        reason: handheld ? 'Estimating motion…' : 'Pause briefly at this view',
+      };
     }
     this.samples++;
     this.recent.push({ corners: a.corners, time: now });
-    // Retain the recent window (and at least five frames at low analysis FPS).
+    // Retain the recent window and the profile’s minimum sample count at low analysis FPS.
     // Bounding history matters when auto capture is off but analysis continues.
     while (
-      this.recent.length > MIN_FRAMES &&
-      (this.recent.length > 64 || this.recent[1]!.time <= now - HOLD_MS)
+      this.recent.length > minFrames &&
+      (this.recent.length > 64 || this.recent[1]!.time <= now - holdMs)
     )
       this.recent.shift();
-    const progress = Math.min(1, (now - this.anchor.time) / HOLD_MS, this.samples / MIN_FRAMES);
-    const capture = progress === 1 && this.samples >= MIN_FRAMES;
+    const progress = Math.min(1, (now - this.anchor.time) / holdMs, this.samples / minFrames);
+    const capture = progress === 1 && this.samples >= minFrames;
     if (capture) {
       const exposureLimit = MAX_EXPOSURE_TRAVEL_PX / exposureDuration(settings);
-      const speedLimit = Math.min(tolerance.speed * scale, exposureLimit);
+      const speedLimit = handheld
+        ? exposureLimit
+        : Math.min(tolerance.speed * scale, exposureLimit);
       // A fitted velocity alone can average back-and-forth shake to zero.
       // Check each interval too, allowing for subpixel detector noise.
       let speed = commonSpeed(this.recent);
@@ -177,13 +203,19 @@ export class AutoCapture {
           capture: false,
           progress: 0,
           reason:
-            exposureLimit < tolerance.speed * scale
-              ? 'Movement detected. Pause briefly or use a shorter exposure.'
+            handheld || exposureLimit < tolerance.speed * scale
+              ? settings.exposureMode === 'manual' && settings.exposureTime! > 0
+                ? 'Movement during exposure is too high. Use a shorter exposure.'
+                : 'Exposure is unknown. Set a short manual exposure or use Timer.'
               : 'Movement detected. Pause briefly at this view.',
         };
       }
     }
-    return { capture, progress, reason: capture ? 'Capturing…' : 'Keep this view steady…' };
+    return {
+      capture,
+      progress,
+      reason: capture ? 'Capturing…' : handheld ? 'Estimating motion…' : 'Keep this view steady…',
+    };
   }
 }
 export function coverage(
@@ -209,7 +241,7 @@ export function coverage(
     strongPercent: (100 * cells.filter((c) => c >= 3).length) / cells.length,
   };
 }
-export function coveragePrompt(frames: Frame[], width: number, height: number) {
+export function coveragePrompt(frames: Frame[], width: number, height: number, rotated = false) {
   if (frames.filter((f) => f.included).length < 3)
     return 'Start with a large, tilted view of the board.';
   const grid = coverage(frames, width, height, 3, 3);
@@ -226,6 +258,6 @@ export function coveragePrompt(frames: Frame[], width: number, height: number) {
   ];
   const min = Math.min(...grid.cells);
   if (min < 3)
-    return `Add views near the ${names[grid.cells.indexOf(min)]}. Keep the board still for each capture.`;
+    return `Add views near the ${names[rotated ? 8 - grid.cells.indexOf(min) : grid.cells.indexOf(min)]}. Use a varied distance and tilt.`;
   return 'Vary the distance and tilt left/right and forward/back. Include large close-up views.';
 }

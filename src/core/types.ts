@@ -27,6 +27,9 @@ export interface Analysis {
   valid: boolean;
   reason: string;
 }
+export type CaptureResult =
+  | { accepted: true; analysis: Analysis; blob: Blob }
+  | { accepted: false; analysis: Analysis };
 export interface Frame {
   id: string;
   name: string;

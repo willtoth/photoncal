@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed } from 'vue';
 import type { BoardConfig } from '../core/types';
-const props = defineProps<{ modelValue: BoardConfig; disabled: boolean }>();
-const emit = defineEmits<{ 'update:modelValue': [BoardConfig]; print: [] }>();
-const unit = ref('mm'),
-  scale = computed(() => (unit.value === 'mm' ? 1000 : 1 / 0.0254));
+const props = defineProps<{ modelValue: BoardConfig; disabled: boolean; unit: 'mm' | 'in' }>();
+const emit = defineEmits<{
+  'update:modelValue': [BoardConfig];
+  'update:unit': ['mm' | 'in'];
+  print: [];
+}>();
+const scale = computed(() => (props.unit === 'mm' ? 1000 : 1 / 0.0254));
 function update(key: keyof BoardConfig, value: any) {
   emit('update:modelValue', { ...props.modelValue, [key]: value });
 }
@@ -27,19 +30,19 @@ function update(key: keyof BoardConfig, value: any) {
       >
       <div class="field-pair">
         <label
-          >Columns · squares<input
-            type="number"
-            min="3"
-            max="40"
-            :value="modelValue.columns"
-            @change="update('columns', Number(($event.target as HTMLInputElement).value))" /></label
-        ><label
           >Rows · squares<input
             type="number"
             min="3"
             max="40"
             :value="modelValue.rows"
-            @change="update('rows', Number(($event.target as HTMLInputElement).value))"
+            @change="update('rows', Number(($event.target as HTMLInputElement).value))" /></label
+        ><label
+          >Columns · squares<input
+            type="number"
+            min="3"
+            max="40"
+            :value="modelValue.columns"
+            @change="update('columns', Number(($event.target as HTMLInputElement).value))"
         /></label>
       </div>
       <div class="field-pair">
@@ -53,7 +56,10 @@ function update(key: keyof BoardConfig, value: any) {
               update('squareSize', Number(($event.target as HTMLInputElement).value) / scale)
             " /></label
         ><label
-          >Units<select v-model="unit">
+          >Units<select
+            :value="unit"
+            @change="emit('update:unit', ($event.target as HTMLSelectElement).value as 'mm' | 'in')"
+          >
             <option value="mm">Millimeters</option>
             <option value="in">Inches</option>
           </select></label
@@ -105,7 +111,7 @@ function update(key: keyof BoardConfig, value: any) {
       </template>
     </fieldset>
     <p class="small muted">
-      {{ (modelValue.columns - 1) * (modelValue.rows - 1) }} internal corners. Measure the printed
+      {{ (modelValue.rows - 1) * (modelValue.columns - 1) }} internal corners. Measure the printed
       target to check its dimensions.
     </p>
     <p v-if="disabled" class="small muted">

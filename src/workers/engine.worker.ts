@@ -87,8 +87,8 @@ async function perform(op: string, args: any, base: string) {
         ),
       ),
     );
-    if (!analysis.valid) throw new Error(analysis.reason);
-    return { analysis, blob: await canvas.convertToBlob({ type: 'image/png' }) };
+    if (!analysis.valid) return { accepted: false, analysis };
+    return { accepted: true, analysis, blob: await canvas.convertToBlob({ type: 'image/png' }) };
   }
   if (op === 'solve') return parse<CalibrationResult>(mod.solve(JSON.stringify(args)));
   if (op === 'uncertainty') return parse(mod.uncertainty(JSON.stringify(args)));

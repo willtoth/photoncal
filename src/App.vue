@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue';
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import {
+  RotateCw,
   Aperture,
   Camera as CameraIcon,
   Focus,
@@ -31,6 +32,16 @@ import FrameViewer from './components/FrameViewer.vue';
 import ResultsPanel from './components/ResultsPanel.vue';
 const {
   session,
+  boardUnit,
+  previewRotated,
+  updateBoard,
+  captureMode,
+  captureRunning,
+  timerSeconds,
+  timerCountdown,
+  toggleCapture,
+  stopCapture,
+  changingControl,
   step,
   video,
   magnifier,
@@ -105,12 +116,26 @@ const {
 const fileInput = ref<HTMLInputElement>(),
   archiveInput = ref<HTMLInputElement>(),
   sessionMenu = ref(false);
+const targetOpen = ref(true);
+watch(
+  () => session.value.id,
+  () => (targetOpen.value = true),
+  { immediate: true },
+);
 const steps = [
   { title: 'Camera', icon: CameraIcon },
   { title: 'Focus', icon: Focus },
   { title: 'Capture', icon: ScanLine },
   { title: 'Results', icon: ChartNoAxesCombined },
 ];
+const captureDisabledReason = computed(() => {
+  if (!connected.value) return 'Start the camera preview to capture an image.';
+  if (working.value) return 'Wait for the current operation to finish.';
+  if (cameraBusy.value) return 'Wait for the camera settings to finish updating.';
+  if (!analysis.value?.valid)
+    return analysis.value?.reason || 'No target corners detected. Show the target to the camera.';
+  return '';
+});
 const titles = ['Camera setup', 'Adjust focus', 'Capture images', 'Calibration results'];
 const descriptions = [
   'Check your camera’s settings, then choose a resolution and frame rate.',
@@ -159,12 +184,12 @@ function restoreSelected(event: Event) {
   (event.target as HTMLSelectElement).value = '';
 }
 function keyboard(event: KeyboardEvent) {
+  if (event.key === 'Escape') stopCapture();
   if ((event.target as HTMLElement).closest('input,select,textarea,button,dialog')) return;
   if (event.code === 'Space' && step.value === 2 && connected.value) {
     event.preventDefault();
     capture();
   }
-  if (event.key === 'Escape') auto.value = false;
 }
 onMounted(() => window.addEventListener('keydown', keyboard));
 onUnmounted(() => window.removeEventListener('keydown', keyboard));
@@ -272,7 +297,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
         <p class="local-note">Save a session archive before clearing browser data.</p>
       </div>
     </aside>
-    <main class="main-content">
+    <main class="main-content" :class="{ 'live-stage': step < 3 && session.source === 'camera' }">
       <div class="mobile-session-actions">
         <button class="button small-button" :disabled="working || cameraBusy" @click="startNew">
           <Plus :size="15" />New calibration
@@ -341,14 +366,15 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
       </div>
 
       <div
-        class="workspace"
+        class="stage-workspace"
         :class="{
-          'workspace-results': step === 3 && session.source === 'camera',
-          'workspace-wide': step === 3 && session.source === 'import',
+          'focus-stage': step === 1,
+          'capture-stage': step === 2,
+          'has-captures': session.frames.length > 0,
         }"
       >
-        <div class="workspace-main">
-          <section v-show="step < 3" class="preview-panel">
+        <div class="live-workspace" :class="{ 'live-workspace-wide': session.source === 'import' }">
+          <section v-show="step < 3 || connected" class="preview-panel">
             <div class="preview-heading">
               <span
                 ><span class="live-dot" :class="{ on: connected }" />{{
@@ -369,10 +395,24 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 >{{ session.width }} × {{ session.height }}</span
               >
               <span v-else-if="selectedCameraMode">{{ modeLabel(selectedCameraMode) }}</span>
+              <button
+                v-if="session.source === 'camera'"
+                class="preview-rotate"
+                :aria-pressed="previewRotated"
+                :disabled="!connected"
+                title="Display only. Captured images and calibration stay unchanged."
+                @click="previewRotated = !previewRotated"
+              >
+                <RotateCw :size="16" />Rotate preview 180°
+              </button>
             </div>
             <div
               class="viewport-media"
-              :class="{ flash: captureFlash, selectable: step === 1 && connected }"
+              :class="{
+                flash: captureFlash,
+                selectable: step === 1 && connected,
+                rotated: previewRotated,
+              }"
               :style="{ aspectRatio: session.width + '/' + session.height }"
               @pointerdown="previewClick"
             >
@@ -451,7 +491,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               </div>
               <div v-if="connected && step === 2" class="capture-hud" role="status">
                 <span class="detection-dot" :class="{ found: analysis?.valid }" /><span>{{
-                  auto
+                  captureRunning
                     ? captureReason
                     : analysis?.valid
                       ? 'Board detected'
@@ -459,6 +499,9 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 }}</span
                 ><span v-if="analysis?.corners.length" class="hud-count"
                   >{{ analysis.corners.length }} corners</span
+                >
+                <strong v-if="captureRunning && captureMode === 'timer'" class="timer-countdown"
+                  >{{ timerCountdown }}s</strong
                 >
                 <div v-if="auto" class="hold-progress">
                   <span :style="{ width: captureProgress * 100 + '%' }" />
@@ -478,412 +521,6 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               >
             </div>
           </section>
-
-          <div v-if="step === 0" class="tip-strip">
-            <Info :size="20" />
-            <p>Use the same camera, resolution, focus, and zoom in PhotonVision.</p>
-          </div>
-          <template v-if="step === 1">
-            <section class="panel focus-dashboard">
-              <div class="focus-magnifier">
-                <canvas
-                  ref="magnifier"
-                  width="320"
-                  height="200"
-                  aria-label="Magnified focus area"
-                /><span>Selected focus area</span>
-              </div>
-              <div class="focus-metrics">
-                <span class="eyebrow">Sharpness</span>
-                <div class="focus-number">
-                  {{ (focusHistory.at(-1) ?? 0).toFixed(1) }}<small>relative</small>
-                </div>
-                <div class="focus-meter"><span :style="{ width: focusPercent + '%' }" /></div>
-                <div class="panel-heading small">
-                  <span>{{ focusPercent.toFixed(0) }}% of best seen</span
-                  ><button
-                    class="text-button"
-                    @click="
-                      bestFocus = 0;
-                      focusHistory = [];
-                    "
-                  >
-                    Reset best score
-                  </button>
-                </div>
-                <svg
-                  viewBox="0 0 300 58"
-                  class="focus-spark"
-                  role="img"
-                  aria-label="Recent focus score"
-                >
-                  <polyline :points="spark" fill="none" stroke="currentColor" stroke-width="2" />
-                </svg>
-                <p class="small muted">
-                  Relative focus score. Keep the scene and exposure fixed when comparing values.
-                </p>
-              </div>
-            </section>
-            <div class="focus-areas">
-              <span class="small muted">Inspect:</span
-              ><button class="button small-button" @click="selectRegion(0.5, 0.5)">Center</button
-              ><button class="button small-button" @click="selectRegion(0.15, 0.15)">
-                Top left</button
-              ><button class="button small-button" @click="selectRegion(0.85, 0.15)">
-                Top right</button
-              ><button class="button small-button" @click="selectRegion(0.15, 0.85)">
-                Bottom left</button
-              ><button class="button small-button" @click="selectRegion(0.85, 0.85)">
-                Bottom right
-              </button>
-            </div>
-          </template>
-          <template v-if="step === 2">
-            <div class="capture-toolbar">
-              <div class="auto-capture">
-                <button
-                  class="toggle"
-                  :class="{ enabled: auto }"
-                  role="switch"
-                  :aria-checked="auto"
-                  aria-label="Automatic capture"
-                  :disabled="!connected || working || cameraBusy || engineState !== 'ready'"
-                  @click="auto = !auto"
-                >
-                  <span />
-                </button>
-                <div>
-                  <strong>Automatic capture</strong
-                  ><small>{{
-                    captureSteadiness === 'handheld'
-                      ? 'Pause briefly at each new view.'
-                      : 'Hold steady at each new view.'
-                  }}</small>
-                </div>
-              </div>
-              <button
-                class="button"
-                :disabled="!connected || working || cameraBusy || !analysis?.valid"
-                @click="capture"
-              >
-                <CameraIcon :size="17" />Capture now <kbd>Space</kbd>
-              </button>
-            </div>
-            <div class="capture-guidance">
-              <Move :size="22" />
-              <p>{{ guidance }}</p>
-            </div>
-            <div v-if="pendingImports.length" class="panel import-review">
-              <h3>{{ pendingImports.length }} images ready to analyze</h3>
-              <p class="small muted">
-                Check the board settings. Images with different dimensions or too few detected
-                corners will be skipped.
-              </p>
-              <label class="check-label"
-                ><input v-model="importAgreement" type="checkbox" />All images use the same camera,
-                resolution, focus, and zoom.</label
-              ><button
-                class="button primary"
-                :disabled="working || !importAgreement || engineState !== 'ready'"
-                @click="importImages"
-              >
-                Analyze images
-              </button>
-            </div>
-            <details v-if="importErrors.length" class="panel">
-              <summary>{{ importErrors.length }} images skipped</summary>
-              <ul class="import-errors">
-                <li v-for="item in importErrors" :key="item">{{ item }}</li>
-              </ul>
-            </details>
-            <FrameGallery
-              :session="session"
-              :disabled="working || cameraBusy || archiveProgress !== undefined"
-              @inspect="activeFrame = $event"
-              @toggle="toggleFrame"
-              @remove="deleteFrame"
-            />
-          </template>
-          <ResultsPanel
-            v-if="step === 3 && session.result"
-            :session="session"
-            :working="working"
-            @download="exportJson"
-            @archive="exportArchive"
-            @capture="setStep(2)"
-            @consistency="consistency"
-            @recalibrate="calibrate"
-          />
-          <FrameGallery
-            v-if="step === 3 && session.frames.length"
-            :session="session"
-            :disabled="working || cameraBusy || archiveProgress !== undefined"
-            @inspect="activeFrame = $event"
-            @toggle="toggleFrame"
-            @remove="deleteFrame"
-          />
-        </div>
-        <div v-if="step < 3 || session.source === 'camera'" class="workspace-side">
-          <template v-if="step === 0">
-            <section class="panel camera-setup">
-              <div class="panel-heading">
-                <h3>Camera settings</h3>
-              </div>
-              <fieldset :disabled="cameraBusy || working">
-                <label>
-                  Camera
-                  <select
-                    :value="deviceId"
-                    @change="selectCamera(($event.target as HTMLSelectElement).value)"
-                  >
-                    <option value="">Default camera</option>
-                    <option
-                      v-for="(device, index) in devices"
-                      :key="device.deviceId"
-                      :value="device.deviceId"
-                    >
-                      {{ device.label || `Camera ${index + 1}` }}
-                    </option>
-                  </select>
-                </label>
-                <template v-if="!session.frames.length">
-                  <p class="small muted camera-check-note">
-                    Checking settings briefly turns on the camera. Preview starts separately.
-                  </p>
-                  <button
-                    class="button full-width"
-                    :class="{ primary: !cameraDiscovery }"
-                    @click="checkCamera"
-                  >
-                    <RefreshCw :size="16" />{{
-                      cameraDiscovery ? 'Check settings again' : 'Check available settings'
-                    }}
-                  </button>
-                  <label v-if="cameraDiscovery" class="camera-mode">
-                    Resolution and frame rate
-                    <select v-model="cameraMode">
-                      <option
-                        v-for="mode in cameraDiscovery.modes"
-                        :key="modeKey(mode)"
-                        :value="modeKey(mode)"
-                      >
-                        {{ modeLabel(mode) }}
-                      </option>
-                    </select>
-                  </label>
-                </template>
-                <p v-else class="small muted camera-check-note">
-                  Session resolution: {{ session.width }} × {{ session.height }}. Start a new
-                  calibration to change it.
-                </p>
-              </fieldset>
-              <div v-if="checkingCamera" class="camera-check-status">
-                <p class="small" role="status">
-                  <LoaderCircle class="spin" :size="16" />{{ cameraCheckProgress }}
-                </p>
-                <button class="text-button" @click="cancelCameraCheck">Cancel check</button>
-              </div>
-              <template v-if="cameraDiscovery && !session.frames.length">
-                <p class="small muted">
-                  {{ cameraDiscovery.modes.length }}
-                  {{ cameraDiscovery.modes.length === 1 ? 'configuration' : 'configurations' }}
-                  verified. The browser controls encoding.
-                </p>
-                <details class="camera-check-details">
-                  <summary>About these settings</summary>
-                  <p class="small muted">
-                    This checks common resolutions and frame rates, plus the browser’s default.
-                    Browsers do not provide a complete list of native camera modes or an encoding
-                    selector.
-                  </p>
-                </details>
-                <p v-if="!cameraDiscovery.unscaled" class="small error-text">
-                  This browser cannot confirm unscaled capture. Check that the image framing matches
-                  PhotonVision.
-                </p>
-              </template>
-              <button
-                v-if="selectedCameraMode || (session.frames.length && session.source !== 'import')"
-                class="button primary full-width"
-                :disabled="cameraBusy || working"
-                @click="connect"
-              >
-                <CameraIcon :size="16" />{{
-                  connecting ? 'Starting preview…' : connected ? 'Restart preview' : 'Start preview'
-                }}
-              </button>
-              <p v-if="cameraSettingsPending" class="small muted" role="status">
-                Restart preview to apply the selected settings.
-              </p>
-              <button
-                v-if="connected"
-                class="text-button full-width"
-                :disabled="cameraBusy || working"
-                @click="stopCamera"
-              >
-                Stop preview
-              </button>
-              <div class="or-divider"><span>or</span></div>
-              <button
-                class="button full-width"
-                :disabled="working || cameraBusy"
-                @click="fileInput?.click()"
-              >
-                <ImagePlus :size="17" />Use saved images
-              </button>
-            </section>
-          </template>
-          <template v-if="step === 0">
-            <section v-if="connected" class="panel">
-              <h3>Camera details</h3>
-              <dl class="camera-details">
-                <div>
-                  <dt>Device</dt>
-                  <dd>{{ session.cameraLabel }}</dd>
-                </div>
-                <div>
-                  <dt>Active settings</dt>
-                  <dd>
-                    {{
-                      modeLabel({
-                        width: settings.width,
-                        height: settings.height,
-                        frameRate: settings.frameRate,
-                      })
-                    }}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Resize mode</dt>
-                  <dd>{{ settings.resizeMode ?? 'Not reported' }}</dd>
-                </div>
-                <div>
-                  <dt>Aspect ratio</dt>
-                  <dd>
-                    {{ Number(settings.aspectRatio ?? session.width / session.height).toFixed(3) }}
-                  </dd>
-                </div>
-              </dl>
-            </section>
-          </template>
-          <template v-if="step === 1"
-            ><section class="panel guidance-panel">
-              <div class="panel-heading">
-                <h3>Focus instructions</h3>
-              </div>
-              <ol class="instruction-list">
-                <li>
-                  Place a detailed target at your working distance. Keep it and the camera still.
-                </li>
-                <li>
-                  Use bright, diffuse light and fixed exposure. Adjust focus slowly to find the
-                  highest sharpness score.
-                </li>
-                <li>Compare the center and edges without refocusing between them.</li>
-                <li>
-                  Secure the lens and disable autofocus. Keep focus and zoom fixed during
-                  calibration and use.
-                </li>
-              </ol>
-              <p class="small muted">
-                Close-up views may look softer. Keep focus fixed as you move the board.
-              </p>
-              <a
-                class="small"
-                href="https://www.edmundoptics.com/knowledge-center/application-notes/imaging/testing-and-targets/"
-                target="_blank"
-                rel="noopener"
-                >Why edge focus matters</a
-              >
-            </section>
-            <div
-              v-if="!controls.some((c) => ['focusMode', 'focusDistance'].includes(c.key))"
-              class="tip-strip small"
-            >
-              <Info :size="20" />
-              <p>
-                This camera has no browser focus control. Lock the lens manually or check that it
-                has fixed focus.
-              </p>
-            </div></template
-          >
-          <template v-if="step === 2"
-            ><BoardSettings
-              v-model="session.board"
-              :disabled="working || session.frames.length > 0"
-              @update:model-value="persist"
-              @print="downloadTarget"
-            />
-            <section class="panel">
-              <div class="panel-heading">
-                <h3>Capture progress</h3>
-              </div>
-              <div class="capture-count">
-                <strong>{{ included.length }}</strong
-                ><span>/ about 100 views</span>
-              </div>
-              <div class="dataset-progress">
-                <span :style="{ width: Math.min(included.length, 100) + '%' }" />
-              </div>
-              <p class="small muted">
-                Calibration requires 12 images. Aim for about 100 varied views, then check coverage
-                and errors.
-              </p>
-              <ul class="capture-checklist">
-                <li>Cover the edges and all four corners.</li>
-                <li>Use large close-ups and varied distances.</li>
-                <li>Tilt forward/back and left/right, up to about 45°.</li>
-                <li>Keep the camera still and the board rigid.</li>
-                <li>Use even light; avoid glare and motion blur.</li>
-              </ul>
-              <a
-                class="small"
-                href="https://mrcal.secretsauce.net/how-to-calibrate.html"
-                target="_blank"
-                rel="noopener"
-                >mrcal capture guidance</a
-              >
-              <div v-if="session.source === 'camera'" class="capture-steadiness">
-                <label
-                  >Capture steadiness
-                  <select v-model="captureSteadiness" :disabled="working || cameraBusy">
-                    <option value="handheld">Handheld</option>
-                    <option value="strict">Strict</option>
-                  </select>
-                </label>
-                <p class="small muted">
-                  Handheld allows small movements. Strict requires a steadier view. Shorter exposure
-                  helps reduce motion blur.
-                </p>
-              </div>
-              <details>
-                <summary>Advanced solve settings</summary>
-                <label
-                  >Approximate horizontal FOV · degrees<input
-                    v-model.number="session.fov"
-                    type="number"
-                    min="10"
-                    max="170"
-                    :disabled="working || cameraBusy"
-                    @change="
-                      session.revision++;
-                      persist();
-                    "
-                /></label>
-                <p class="small muted">
-                  Starting estimate for calibration. Use the lens specification if known.
-                </p>
-              </details>
-            </section>
-            <button
-              v-if="session.source === 'import'"
-              class="button full-width"
-              :disabled="working || cameraBusy"
-              @click="fileInput?.click()"
-            >
-              <ImagePlus :size="17" />Add more images
-            </button></template
-          >
           <CameraControls
             v-if="session.source === 'camera'"
             :controls="controls"
@@ -891,9 +528,499 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
             :locked="!!session.frames.length"
             :checked="!!cameraDiscovery || connected"
             :inactive="!connected"
-            :disabled="cameraBusy"
+            :disabled="cameraBusy && !changingControl"
             @change="changeControl"
           />
+          <div v-if="step === 2 && session.source === 'camera'" class="capture-toolbar">
+            <label
+              >Capture mode<select v-model="captureMode" :disabled="working || cameraBusy">
+                <option value="manual">Manual</option>
+                <option value="auto">Automatic</option>
+                <option value="timer">Timer</option>
+              </select></label
+            >
+            <label v-if="captureMode === 'auto'"
+              >Capture steadiness<select
+                v-model="captureSteadiness"
+                :disabled="working || cameraBusy"
+              >
+                <option value="handheld">Handheld · global shutter</option>
+                <option value="strict">Strict · rolling / unknown shutter</option>
+              </select></label
+            >
+            <label v-if="captureMode === 'timer'"
+              >Interval · seconds<input
+                v-model.lazy.number="timerSeconds"
+                type="number"
+                min="1"
+                max="30"
+                step="1"
+                :disabled="working"
+            /></label>
+            <div v-if="captureMode === 'auto'" class="auto-capture">
+              <button
+                class="toggle"
+                :class="{ enabled: captureRunning }"
+                role="switch"
+                :aria-checked="captureRunning"
+                aria-label="Automatic capture"
+                :disabled="
+                  !captureRunning &&
+                  (!connected || working || cameraBusy || engineState !== 'ready')
+                "
+                @click="toggleCapture"
+              >
+                <span /></button
+              ><strong>{{ captureRunning ? 'Running' : 'Start auto' }}</strong>
+            </div>
+            <button
+              v-if="captureMode === 'timer'"
+              class="button primary"
+              :disabled="
+                !captureRunning && (!connected || working || cameraBusy || engineState !== 'ready')
+              "
+              @click="toggleCapture"
+            >
+              {{ captureRunning ? 'Stop timer' : 'Start timer' }}
+            </button>
+            <span
+              class="capture-action"
+              :tabindex="captureDisabledReason ? 0 : undefined"
+              :aria-label="captureDisabledReason || undefined"
+            >
+              <button
+                class="button"
+                :aria-describedby="captureDisabledReason ? 'capture-disabled-reason' : undefined"
+                :disabled="!!captureDisabledReason"
+                @click="capture"
+              >
+                <CameraIcon :size="17" />Capture now <kbd>Space</kbd>
+              </button>
+              <span v-if="captureDisabledReason" id="capture-disabled-reason" role="tooltip">{{
+                captureDisabledReason
+              }}</span>
+            </span>
+            <p class="small muted capture-mode-help">
+              {{
+                captureMode === 'timer'
+                  ? 'Repeating countdown. Skips missing targets and duplicate views; no steadiness check.'
+                  : captureMode === 'auto'
+                    ? captureSteadiness === 'handheld'
+                      ? 'Natural movement is OK with a short exposure and global shutter.'
+                      : 'Hold the target steady for rolling or unknown shutter cameras.'
+                    : 'Capture a detected target with the button or Space.'
+              }}
+            </p>
+          </div>
+        </div>
+        <div
+          class="workspace"
+          :class="{
+            'workspace-results': step === 3 && session.source === 'camera',
+            'workspace-wide': step === 3,
+          }"
+        >
+          <div class="workspace-main">
+            <div v-if="step === 0" class="tip-strip">
+              <Info :size="20" />
+              <p>Use the same camera, resolution, focus, and zoom in PhotonVision.</p>
+            </div>
+            <template v-if="step === 1">
+              <section class="panel focus-dashboard">
+                <div class="focus-magnifier">
+                  <canvas
+                    ref="magnifier"
+                    :class="{ 'preview-rotated': previewRotated }"
+                    width="320"
+                    height="200"
+                    aria-label="Magnified focus area"
+                  /><span>Selected focus area</span>
+                </div>
+                <div class="focus-metrics">
+                  <span class="eyebrow">Sharpness</span>
+                  <div class="focus-number">
+                    {{ (focusHistory.at(-1) ?? 0).toFixed(1) }}<small>relative</small>
+                  </div>
+                  <div class="focus-meter"><span :style="{ width: focusPercent + '%' }" /></div>
+                  <div class="panel-heading small">
+                    <span>{{ focusPercent.toFixed(0) }}% of best seen</span
+                    ><button
+                      class="text-button"
+                      @click="
+                        bestFocus = 0;
+                        focusHistory = [];
+                      "
+                    >
+                      Reset best score
+                    </button>
+                  </div>
+                  <svg
+                    viewBox="0 0 300 58"
+                    class="focus-spark"
+                    role="img"
+                    aria-label="Recent focus score"
+                  >
+                    <polyline :points="spark" fill="none" stroke="currentColor" stroke-width="2" />
+                  </svg>
+                  <p class="small muted">
+                    Relative focus score. Keep the scene and exposure fixed when comparing values.
+                  </p>
+                </div>
+              </section>
+              <div class="focus-areas">
+                <span class="small muted">Inspect:</span
+                ><button class="button small-button" @click="selectRegion(0.5, 0.5)">Center</button
+                ><button class="button small-button" @click="selectRegion(0.15, 0.15)">
+                  Top left</button
+                ><button class="button small-button" @click="selectRegion(0.85, 0.15)">
+                  Top right</button
+                ><button class="button small-button" @click="selectRegion(0.15, 0.85)">
+                  Bottom left</button
+                ><button class="button small-button" @click="selectRegion(0.85, 0.85)">
+                  Bottom right
+                </button>
+              </div>
+            </template>
+            <template v-if="step === 2">
+              <div class="capture-guidance">
+                <Move :size="22" />
+                <p>{{ guidance }}</p>
+              </div>
+              <div v-if="pendingImports.length" class="panel import-review">
+                <h3>{{ pendingImports.length }} images ready to analyze</h3>
+                <p class="small muted">
+                  Check the board settings. Images with different dimensions or too few detected
+                  corners will be skipped.
+                </p>
+                <label class="check-label"
+                  ><input v-model="importAgreement" type="checkbox" />All images use the same
+                  camera, resolution, focus, and zoom.</label
+                ><button
+                  class="button primary"
+                  :disabled="working || !importAgreement || engineState !== 'ready'"
+                  @click="importImages"
+                >
+                  Analyze images
+                </button>
+              </div>
+              <details v-if="importErrors.length" class="panel">
+                <summary>{{ importErrors.length }} images skipped</summary>
+                <ul class="import-errors">
+                  <li v-for="item in importErrors" :key="item">{{ item }}</li>
+                </ul>
+              </details>
+              <FrameGallery
+                v-if="session.source === 'import' || !session.frames.length"
+                :session="session"
+                :disabled="working || cameraBusy || archiveProgress !== undefined"
+                @inspect="activeFrame = $event"
+                @toggle="toggleFrame"
+                @remove="deleteFrame"
+              />
+            </template>
+            <ResultsPanel
+              v-if="step === 3 && session.result"
+              :session="session"
+              :working="working"
+              @download="exportJson"
+              @archive="exportArchive"
+              @capture="setStep(2)"
+              @consistency="consistency"
+              @recalibrate="calibrate"
+              @inspect="activeFrame = $event"
+            />
+            <FrameGallery
+              v-if="step === 3 && session.frames.length"
+              :session="session"
+              :disabled="working || cameraBusy || archiveProgress !== undefined"
+              @inspect="activeFrame = $event"
+              @toggle="toggleFrame"
+              @remove="deleteFrame"
+            />
+          </div>
+          <div v-if="step < 3 || session.source === 'camera'" class="workspace-side">
+            <template v-if="step === 0">
+              <section class="panel camera-setup">
+                <div class="panel-heading">
+                  <h3>Camera settings</h3>
+                </div>
+                <fieldset :disabled="cameraBusy || working">
+                  <label>
+                    Camera
+                    <select
+                      :value="deviceId"
+                      @change="selectCamera(($event.target as HTMLSelectElement).value)"
+                    >
+                      <option value="">Default camera</option>
+                      <option
+                        v-for="(device, index) in devices"
+                        :key="device.deviceId"
+                        :value="device.deviceId"
+                      >
+                        {{ device.label || `Camera ${index + 1}` }}
+                      </option>
+                    </select>
+                  </label>
+                  <template v-if="!session.frames.length">
+                    <button
+                      class="button full-width"
+                      :class="{ primary: !cameraDiscovery }"
+                      @click="checkCamera"
+                    >
+                      <RefreshCw :size="16" />{{
+                        cameraDiscovery ? 'Check settings again' : 'Check available settings'
+                      }}
+                    </button>
+                    <label v-if="cameraDiscovery" class="camera-mode">
+                      Resolution and frame rate
+                      <select v-model="cameraMode">
+                        <option
+                          v-for="mode in cameraDiscovery.modes"
+                          :key="modeKey(mode)"
+                          :value="modeKey(mode)"
+                        >
+                          {{ modeLabel(mode) }}
+                        </option>
+                      </select>
+                    </label>
+                  </template>
+                  <p v-else class="small muted camera-check-note">
+                    Session resolution: {{ session.width }} × {{ session.height }}. Start a new
+                    calibration to change it.
+                  </p>
+                </fieldset>
+                <div v-if="checkingCamera" class="camera-check-status">
+                  <p class="small" role="status">
+                    <LoaderCircle class="spin" :size="16" />{{ cameraCheckProgress }}
+                  </p>
+                  <button class="text-button" @click="cancelCameraCheck">Cancel check</button>
+                </div>
+                <template v-if="cameraDiscovery && !session.frames.length">
+                  <details class="camera-check-details">
+                    <summary>About these settings</summary>
+                    <p class="small muted">
+                      {{ cameraDiscovery.modes.length }}
+                      {{ cameraDiscovery.modes.length === 1 ? 'configuration' : 'configurations' }}
+                      verified. The browser controls encoding.
+                    </p>
+
+                    <p class="small muted camera-check-note">
+                      Checking settings briefly turns on the camera. Preview starts separately.
+                    </p>
+
+                    <p class="small muted">
+                      This checks common resolutions and frame rates, plus the browser’s default.
+                      Browsers do not provide a complete list of native camera modes or an encoding
+                      selector.
+                    </p>
+                  </details>
+                  <p v-if="!cameraDiscovery.unscaled" class="small error-text">
+                    This browser cannot confirm unscaled capture. Check that the image framing
+                    matches PhotonVision.
+                  </p>
+                </template>
+                <button
+                  v-if="
+                    selectedCameraMode || (session.frames.length && session.source !== 'import')
+                  "
+                  class="button primary full-width"
+                  :disabled="cameraBusy || working"
+                  @click="connect"
+                >
+                  <CameraIcon :size="16" />{{
+                    connecting
+                      ? 'Starting preview…'
+                      : connected
+                        ? 'Restart preview'
+                        : 'Start preview'
+                  }}
+                </button>
+                <p v-if="cameraSettingsPending" class="small muted" role="status">
+                  Restart preview to apply the selected settings.
+                </p>
+                <button
+                  v-if="connected"
+                  class="text-button full-width"
+                  :disabled="cameraBusy || working"
+                  @click="stopCamera"
+                >
+                  Stop preview
+                </button>
+                <div class="or-divider"><span>or</span></div>
+                <button
+                  class="button full-width"
+                  :disabled="working || cameraBusy"
+                  @click="fileInput?.click()"
+                >
+                  <ImagePlus :size="17" />Use saved images
+                </button>
+              </section>
+            </template>
+            <template v-if="step === 0">
+              <details v-if="connected" class="panel">
+                <summary>Camera details</summary>
+                <dl class="camera-details">
+                  <div>
+                    <dt>Device</dt>
+                    <dd>{{ session.cameraLabel }}</dd>
+                  </div>
+                  <div>
+                    <dt>Active settings</dt>
+                    <dd>
+                      {{
+                        modeLabel({
+                          width: settings.width,
+                          height: settings.height,
+                          frameRate: settings.frameRate,
+                        })
+                      }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Resize mode</dt>
+                    <dd>{{ settings.resizeMode ?? 'Not reported' }}</dd>
+                  </div>
+                  <div>
+                    <dt>Aspect ratio</dt>
+                    <dd>
+                      {{
+                        Number(settings.aspectRatio ?? session.width / session.height).toFixed(3)
+                      }}
+                    </dd>
+                  </div>
+                </dl>
+              </details>
+            </template>
+            <template v-if="step === 1"
+              ><section class="panel guidance-panel">
+                <div class="panel-heading">
+                  <h3>Focus instructions</h3>
+                </div>
+                <ol class="instruction-list">
+                  <li>
+                    Place a detailed target at your working distance. Keep it and the camera still.
+                  </li>
+                  <li>
+                    Use bright, diffuse light and fixed exposure. Adjust focus slowly to find the
+                    highest sharpness score.
+                  </li>
+                  <li>Compare the center and edges without refocusing between them.</li>
+                  <li>
+                    Secure the lens and disable autofocus. Keep focus and zoom fixed during
+                    calibration and use.
+                  </li>
+                </ol>
+                <p class="small muted">
+                  Close-up views may look softer. Keep focus fixed as you move the board.
+                </p>
+                <a
+                  class="small"
+                  href="https://www.edmundoptics.com/knowledge-center/application-notes/imaging/testing-and-targets/"
+                  target="_blank"
+                  rel="noopener"
+                  >Why edge focus matters</a
+                >
+              </section>
+              <div
+                v-if="!controls.some((c) => ['focusMode', 'focusDistance'].includes(c.key))"
+                class="tip-strip small"
+              >
+                <Info :size="20" />
+                <p>
+                  This camera has no browser focus control. Lock the lens manually or check that it
+                  has fixed focus.
+                </p>
+              </div></template
+            >
+            <template v-if="step === 2">
+              <details
+                class="target-disclosure"
+                :open="targetOpen || session.source === 'import'"
+                @toggle="targetOpen = ($event.target as HTMLDetailsElement).open"
+              >
+                <summary>
+                  Target settings
+                  <span class="small muted"
+                    >{{ session.board.rows }} × {{ session.board.columns }} ·
+                    {{ session.board.kind === 'charuco' ? 'ChArUco' : 'Chessboard' }}</span
+                  >
+                </summary>
+                <BoardSettings
+                  :model-value="session.board"
+                  v-model:unit="boardUnit"
+                  :disabled="working || cameraBusy || session.frames.length > 0"
+                  @update:model-value="updateBoard"
+                  @print="downloadTarget"
+                />
+              </details>
+              <FrameGallery
+                v-if="session.source === 'camera' && session.frames.length"
+                live
+                :session="session"
+                :disabled="working || cameraBusy || archiveProgress !== undefined"
+                @inspect="activeFrame = $event"
+                @toggle="toggleFrame"
+                @remove="deleteFrame"
+              />
+              <details class="panel capture-details">
+                <summary>Capture guidance &amp; solve settings</summary>
+                <div class="capture-count">
+                  <strong>{{ included.length }}</strong
+                  ><span>/ about 100 views</span>
+                </div>
+                <div class="dataset-progress">
+                  <span :style="{ width: Math.min(included.length, 100) + '%' }" />
+                </div>
+                <p class="small muted">
+                  Calibration requires 12 images. Aim for about 100 varied views, then check
+                  coverage and errors.
+                </p>
+                <details>
+                  <summary>Tips for good coverage</summary>
+                  <ul class="capture-checklist">
+                    <li>Cover the edges and all four corners.</li>
+                    <li>Use large close-ups and varied distances.</li>
+                    <li>Tilt forward/back and left/right, up to about 45°.</li>
+                    <li>Keep the camera still and the board rigid.</li>
+                    <li>Use even light; avoid glare and motion blur.</li>
+                  </ul>
+                  <a
+                    class="small"
+                    href="https://mrcal.secretsauce.net/how-to-calibrate.html"
+                    target="_blank"
+                    rel="noopener"
+                    >mrcal capture guidance</a
+                  >
+                </details>
+                <details>
+                  <summary>Advanced solve settings</summary>
+                  <label
+                    >Approximate horizontal FOV · degrees<input
+                      v-model.number="session.fov"
+                      type="number"
+                      min="10"
+                      max="170"
+                      :disabled="working || cameraBusy"
+                      @change="
+                        session.revision++;
+                        persist();
+                      "
+                  /></label>
+                  <p class="small muted">
+                    Starting estimate for calibration. Use the lens specification if known.
+                  </p>
+                </details>
+              </details>
+              <button
+                v-if="session.source === 'import'"
+                class="button full-width"
+                :disabled="working || cameraBusy"
+                @click="fileInput?.click()"
+              >
+                <ImagePlus :size="17" />Add more images
+              </button></template
+            >
+          </div>
         </div>
       </div>
       <footer v-if="step < 3" class="workflow-footer">

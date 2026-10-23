@@ -69,9 +69,6 @@ function draw() {
     ctx.strokeStyle = '#64dbbf';
     ctx.lineWidth = 2 * scale;
     ctx.strokeRect(r.x * props.width, r.y * props.height, r.w * props.width, r.h * props.height);
-    ctx.fillStyle = '#64dbbf';
-    ctx.font = `${11 * scale}px sans-serif`;
-    ctx.fillText('FOCUS AREA', r.x * props.width, r.y * props.height - 8 * scale);
   }
 }
 watch(

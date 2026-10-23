@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import ExposureControl from './ExposureControl.vue';
 import { cameraControlDefinitions, type Control } from '../core/camera';
 const props = withDefaults(
   defineProps<{
@@ -37,7 +38,7 @@ const unavailable = computed(() =>
 const emit = defineEmits<{ change: [string, string | number] }>();
 </script>
 <template>
-  <details class="panel camera-controls">
+  <details class="panel camera-controls" open>
     <summary>Camera controls</summary>
     <p
       v-if="locked && controls.some((c) => ['focusMode', 'focusDistance', 'zoom'].includes(c.key))"
@@ -59,7 +60,12 @@ const emit = defineEmits<{ change: [string, string | number] }>();
     </p>
     <p v-else-if="inactive" class="small muted">Start preview to adjust these controls.</p>
     <fieldset :disabled="disabled || inactive">
-      <div v-for="control in controls" :key="control.key" class="camera-control">
+      <div
+        v-for="control in controls"
+        :key="control.key"
+        class="camera-control"
+        :class="{ 'exposure-wide': control.key === 'exposureTime' }"
+      >
         <label v-if="control.choices"
           >{{ control.label
           }}<select
@@ -76,6 +82,13 @@ const emit = defineEmits<{ change: [string, string | number] }>();
             </option>
           </select></label
         >
+        <ExposureControl
+          v-else-if="control.key === 'exposureTime'"
+          :control="control"
+          :value="settings.exposureTime"
+          :disabled="disabled || inactive || settings.exposureMode !== 'manual'"
+          @change="emit('change', 'exposureTime', $event)"
+        />
         <label v-else
           ><span class="range-label"
             >{{ control.label
@@ -101,9 +114,10 @@ const emit = defineEmits<{ change: [string, string | number] }>();
         /></label>
       </div>
     </fieldset>
-    <p v-if="checked && controls.length && unavailable.length" class="small muted">
-      Not adjustable in this browser: {{ unavailable.join(', ') }}.
-    </p>
+    <details v-if="checked && controls.length && unavailable.length" class="small muted">
+      <summary>Control availability</summary>
+      <p>Not adjustable in this browser: {{ unavailable.join(', ') }}.</p>
+    </details>
     <p
       v-if="controls.some((c) => ['exposureTime', 'focusDistance'].includes(c.key))"
       class="small muted"

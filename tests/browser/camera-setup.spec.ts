@@ -16,7 +16,6 @@ test('checks pairs before preview, preserves active settings until restart, and 
     '640 × 480 · 60 fps',
     '1280 × 720 · 30 fps',
   ]);
-  await page.locator('.camera-controls > summary').click();
   await expect(brightness).toBeDisabled();
   expect(
     await page.evaluate(() =>
@@ -83,7 +82,6 @@ test('explains missing browser control support before access and still allows pr
   await page.goto('/');
   const setup = page.locator('.camera-setup');
   const explanation = page.getByText(/This browser does not support camera image controls/);
-  await page.locator('.camera-controls > summary').click();
   await expect(explanation).toBeVisible();
   await expect(explanation).toContainText('Try Chrome or Edge');
   expect(await page.evaluate(() => (window as any).cameraTest.requests)).toHaveLength(0);
@@ -108,28 +106,26 @@ test('manual exposure stays selected, unlocks the shutter, and reports driver re
   const exposureMode = page.getByRole('combobox', { name: 'Exposure mode', exact: true });
   const shutter = page.getByRole('slider', { name: 'Shutter / exposure', exact: true });
   const controlsToggle = page.locator('.camera-controls > summary');
-  await expect(exposureMode).toBeHidden();
-  await controlsToggle.click();
+  const shutterEntry = page.getByRole('spinbutton', { name: 'Exposure in milliseconds' });
+  await expect(exposureMode).toBeVisible();
   await expect(exposureMode).toHaveValue('continuous');
   await expect(shutter).toBeDisabled();
   await exposureMode.selectOption('manual');
   await expect(shutter).toBeEnabled();
   await expect(exposureMode).toHaveValue('manual');
-  await expect(shutter).toHaveValue('100');
-  await shutter.evaluate((input) => {
-    (input as HTMLInputElement).value = '50';
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  await expect(shutterEntry).toHaveValue('10');
+  await shutterEntry.fill('5');
+  await shutterEntry.press('Tab');
   await expect(
     page.locator('.camera-control').filter({ has: shutter }).locator('output'),
-  ).toHaveText('50 100 µs');
+  ).toHaveText('5 ms · 1/200 s');
   await expect(exposureMode).toHaveValue('manual');
   await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(page.locator('.camera-details')).toContainText('1280 × 720 · 30 fps');
   const brightness = page.getByRole('slider', { name: 'Brightness', exact: true });
   await page.getByRole('button', { name: 'Continue to focus', exact: true }).click();
   await expect(exposureMode).toHaveValue('manual');
-  await expect(shutter).toHaveValue('50');
+  await expect(shutterEntry).toHaveValue('5');
   await expect(brightness).toBeEnabled();
   await brightness.evaluate((input) => {
     (input as HTMLInputElement).value = '65';
@@ -149,17 +145,15 @@ test('manual exposure stays selected, unlocks the shutter, and reports driver re
   });
   await controlsToggle.click();
   await expect(brightness).toHaveValue('65');
-  await shutter.evaluate((input) => {
-    (input as HTMLInputElement).value = '75';
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  await shutterEntry.fill('7.5');
+  await shutterEntry.press('Tab');
   await expect(
     page.locator('.camera-control').filter({ has: shutter }).locator('output'),
-  ).toHaveText('75 100 µs');
+  ).toHaveText('7.5 ms · 1/133.3 s');
   await page.getByRole('navigation').getByRole('button', { name: 'Camera', exact: false }).click();
   await page.getByRole('navigation').getByRole('button', { name: 'Capture', exact: false }).click();
   await expect(page.getByRole('heading', { name: 'Capture images', exact: true })).toBeVisible();
-  await expect(shutter).toHaveValue('75');
+  await expect(shutterEntry).toHaveValue('7.5');
   await expect(exposureMode).toHaveValue('manual');
   expect(await page.evaluate(() => (window as any).cameraTest.requests)).toHaveLength(2);
   await page.getByRole('slider', { name: 'Focus distance', exact: true }).evaluate((input) => {

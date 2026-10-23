@@ -1,29 +1,60 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
-import { Camera, matchesMode, type CameraMode, type Control } from './core/camera';
+import {
+  cameraControlDefinitions,
+  Camera,
+  matchesMode,
+  type CameraMode,
+  type Control,
+} from './core/camera';
 import { discoverCamera, modeKey, type CameraDiscovery } from './core/cameraModes';
 import { EngineClient } from './core/engine';
-import { AutoCapture, coverage, coveragePrompt, type CaptureSteadiness } from './core/capture';
+import {
+  AutoCapture,
+  CaptureTimer,
+  duplicateView,
+  coverage,
+  coveragePrompt,
+  type CaptureMode,
+  type CaptureSteadiness,
+} from './core/capture';
 import {
   newSession,
   currentResult,
   solveRequest,
   type Session,
+  type BoardConfig,
+  type CaptureResult,
   type Analysis,
   type Region,
   type CalibrationResult,
   type Grid,
 } from './core/types';
+import {
+  readPreferences,
+  writePreferences,
+  defaultCameraPreferences,
+  validBoard,
+} from './core/preferences';
+import { previewPoint } from './core/preview';
 import * as storage from './core/storage';
 import { download, filename, photonVisionCalibration } from './core/export';
 
 export function useCalibration() {
-  const session = ref<Session>(newSession()),
+  const preferences = readPreferences();
+  const initialCamera = preferences.cameras[preferences.lastDevice] ?? defaultCameraPreferences();
+  const boardUnit = ref(preferences.unit),
+    previewRotated = ref(initialCamera.rotated);
+  const session = ref<Session>({
+      ...newSession(),
+      board: { ...preferences.board },
+      fov: initialCamera.fov,
+    }),
     step = ref(0),
     video = ref<HTMLVideoElement>(),
     magnifier = ref<HTMLCanvasElement>();
   const sessions = ref<Session[]>([]),
     devices = ref<MediaDeviceInfo[]>([]),
-    deviceId = ref('');
+    deviceId = ref(preferences.lastDevice);
   const connected = ref(false),
     connecting = ref(false),
     changingControl = ref(false),
@@ -54,8 +85,10 @@ export function useCalibration() {
     notice = ref(''),
     working = ref(false),
     progress = ref(''),
-    auto = ref(false),
-    captureSteadiness = ref<CaptureSteadiness>('handheld'),
+    captureRunning = ref(false),
+    captureMode = ref<CaptureMode>(preferences.captureMode),
+    timerSeconds = ref(preferences.timerSeconds),
+    captureSteadiness = ref<CaptureSteadiness>(initialCamera.steadiness),
     captureProgress = ref(0),
     captureReason = ref('Connect a camera to begin');
   const analysis = ref<Analysis>(),
@@ -73,7 +106,17 @@ export function useCalibration() {
   const camera = new Camera(),
     vision = new EngineClient(),
     solver = new EngineClient(),
-    gate = new AutoCapture();
+    gate = new AutoCapture(initialCamera.steadiness);
+  const timer = new CaptureTimer(),
+    timerClock = ref(performance.now());
+  const timerCountdown = computed(() =>
+    captureRunning.value && captureMode.value === 'timer'
+      ? timer.remaining(timerClock.value)
+      : timerSeconds.value,
+  );
+  const auto = computed(() => captureRunning.value && captureMode.value === 'auto');
+  let loadingPreferences = false;
+  let clockId: ReturnType<typeof setInterval> | undefined;
   let loopId = 0,
     loopGeneration = 0,
     operationGeneration = 0,
@@ -86,16 +129,160 @@ export function useCalibration() {
       gate.setSteadiness(value);
       captureProgress.value = 0;
       controlGeneration++;
+      rememberCamera(false);
     },
     { flush: 'sync' },
   );
+  function savePreferences() {
+    if (!writePreferences(preferences))
+      notice.value =
+        'Browser preferences could not be saved. Current settings remain available for this run.';
+  }
+  function rememberCamera(includeControls = true) {
+    if (loadingPreferences || !deviceId.value || session.value.source !== 'camera') return;
+    const profile = preferences.cameras[deviceId.value] ?? defaultCameraPreferences();
+    profile.rotated = previewRotated.value;
+    profile.steadiness = captureSteadiness.value;
+    if (Number.isFinite(session.value.fov) && session.value.fov >= 10 && session.value.fov <= 170)
+      profile.fov = session.value.fov;
+    if (includeControls && connected.value) {
+      profile.mode =
+        !session.value.frames.length && selectedCameraMode.value
+          ? { ...selectedCameraMode.value }
+          : {
+              width: session.value.width,
+              height: session.value.height,
+              frameRate: settings.value.frameRate,
+            };
+      for (const { key } of cameraControlDefinitions) {
+        const value = settings.value[key];
+        if (typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value)))
+          profile.controls[key] = value;
+      }
+    }
+    preferences.cameras[deviceId.value] = profile;
+    preferences.lastDevice = deviceId.value;
+    savePreferences();
+  }
+  function loadCameraPreferences() {
+    loadingPreferences = true;
+    const profile = preferences.cameras[deviceId.value] ?? defaultCameraPreferences();
+    previewRotated.value = profile.rotated;
+    captureSteadiness.value = profile.steadiness;
+    if (!session.value.frames.length) session.value.fov = profile.fov;
+    loadingPreferences = false;
+  }
+  function updateBoard(board: BoardConfig) {
+    if (session.value.frames.length || working.value || cameraBusy.value) return;
+    session.value.board = board;
+    controlGeneration++;
+    gate.reset();
+    if (validBoard(board)) {
+      preferences.board = { ...board };
+      savePreferences();
+    }
+    void persist();
+  }
+  function restartTimer() {
+    if (captureRunning.value && captureMode.value === 'timer')
+      timer.restart(performance.now(), timerSeconds.value);
+    timerClock.value = performance.now();
+  }
+  function stopCapture() {
+    captureRunning.value = false;
+    manual = false;
+    controlGeneration++;
+    gate.reset();
+    timer.stop();
+  }
+  function toggleCapture() {
+    if (captureRunning.value) {
+      stopCapture();
+      return;
+    }
+    if (
+      !connected.value ||
+      step.value !== 2 ||
+      working.value ||
+      cameraBusy.value ||
+      engineState.value !== 'ready'
+    )
+      return;
+    captureRunning.value = !captureRunning.value;
+  }
+  watch(
+    captureRunning,
+    () => {
+      controlGeneration++;
+      manual = false;
+      gate.reset();
+      if (captureRunning.value) {
+        captureReason.value =
+          captureMode.value === 'timer'
+            ? 'Timer running. Move to a new view.'
+            : 'Estimating motion…';
+        restartTimer();
+      } else timer.stop();
+    },
+    { flush: 'sync' },
+  );
+  watch(
+    captureMode,
+    (value) => {
+      stopCapture();
+      preferences.captureMode = value;
+      savePreferences();
+    },
+    { flush: 'sync' },
+  );
+  watch(
+    timerSeconds,
+    (value) => {
+      if (!Number.isInteger(value) || value < 1 || value > 30) {
+        timerSeconds.value = preferences.timerSeconds;
+        return;
+      }
+      preferences.timerSeconds = value;
+      restartTimer();
+      savePreferences();
+    },
+    { flush: 'sync' },
+  );
+  watch(previewRotated, () => rememberCamera(false), { flush: 'sync' });
+  watch(boardUnit, (value) => {
+    preferences.unit = value;
+    savePreferences();
+  });
+  watch(
+    () => session.value.fov,
+    () => {
+      if (!loadingPreferences) rememberCamera(false);
+    },
+    { flush: 'sync' },
+  );
+  watch(selectedCameraMode, (mode) => {
+    if (!mode || session.value.frames.length || !deviceId.value) return;
+    const profile = preferences.cameras[deviceId.value] ?? defaultCameraPreferences();
+    profile.mode = { ...mode };
+    preferences.cameras[deviceId.value] = profile;
+    preferences.lastDevice = deviceId.value;
+    savePreferences();
+  });
+  function visibilityChanged() {
+    if (document.hidden) stopCapture();
+  }
   const included = computed(() => session.value.frames.filter((f) => f.included));
   const result = computed(() => currentResult(session.value));
   const coverageData = computed(() =>
     coverage(session.value.frames, session.value.width, session.value.height),
   );
   const guidance = computed(() =>
-    coveragePrompt(session.value.frames, session.value.width, session.value.height),
+    coveragePrompt(
+      session.value.frames,
+      session.value.width,
+      session.value.height,
+      previewRotated.value,
+    ),
   );
   const focusScore = computed(() => analysis.value?.sharpness ?? 0);
   const canSolve = computed(
@@ -158,6 +345,9 @@ export function useCalibration() {
     if (working.value || cameraBusy.value) return;
     stopCamera();
     deviceId.value = id;
+    loadCameraPreferences();
+    preferences.lastDevice = id;
+    savePreferences();
     clearCameraSetup();
     if (!session.value.frames.length) resetFocus();
   }
@@ -173,7 +363,10 @@ export function useCalibration() {
     try {
       const found = await discoverCamera(deviceId.value, {
         signal: controller.signal,
-        preferred: { width: session.value.width, height: session.value.height },
+        preferred: preferences.cameras[deviceId.value]?.mode ?? {
+          width: session.value.width,
+          height: session.value.height,
+        },
         onProgress: (checked, total) => {
           if (cameraCheck === controller)
             cameraCheckProgress.value = `Checking settings ${checked} of ${total}…`;
@@ -181,8 +374,17 @@ export function useCalibration() {
       });
       if (cameraCheck !== controller || disposed) return;
       cameraDiscovery.value = found;
-      cameraMode.value = modeKey(found.defaultMode);
+      const preferred = preferences.cameras[found.deviceId]?.mode;
+      cameraMode.value = modeKey(
+        found.modes.find((m) => preferred && matchesMode(m, preferred)) ?? found.defaultMode,
+      );
+      if (preferred && !found.modes.some((m) => matchesMode(m, preferred)))
+        notice.value =
+          'The remembered resolution/FPS is unavailable. Select a verified configuration.';
       deviceId.value = found.deviceId;
+      loadCameraPreferences();
+      preferences.lastDevice = found.deviceId;
+      savePreferences();
       devices.value = found.devices;
       controls.value = found.controls;
       settings.value = found.settings;
@@ -201,8 +403,7 @@ export function useCalibration() {
     video.value?.cancelVideoFrameCallback?.(loopId);
     camera.stop();
     connected.value = false;
-    auto.value = false;
-    gate.reset();
+    stopCapture();
     if (video.value) video.value.srcObject = null;
   }
   async function connect() {
@@ -237,18 +438,35 @@ export function useCalibration() {
         camera.stop();
         return;
       }
-      if (session.value.frames.length) {
-        // A reopened track can reset its lens controls. Restore fixed optics
-        // before accepting another image from an existing calibration session.
-        for (const key of ['focusMode', 'focusDistance', 'zoom']) {
-          const value = session.value.settings[key];
+      const savedControls = session.value.frames.length
+        ? { ...session.value.settings }
+        : (preferences.cameras[camera.settings.deviceId ?? deviceId.value]?.controls ?? {});
+      const restoreMessages: string[] = [];
+      // Restore modes before their values, with shutter included in manual requests.
+      for (const { key } of cameraControlDefinitions) {
+        const value = savedControls[key];
+        if (typeof value !== 'number' && typeof value !== 'string') continue;
+        if (key === 'exposureTime' && savedControls.exposureMode !== 'manual') continue;
+        if (key === 'focusDistance' && savedControls.focusMode !== 'manual') continue;
+        if (key === 'colorTemperature' && savedControls.whiteBalanceMode !== 'manual') continue;
+        const cap = camera.capabilities[key];
+        try {
           if (
-            camera.capabilities[key] !== undefined &&
-            (typeof value === 'number' || typeof value === 'string')
+            cap === undefined ||
+            (Array.isArray(cap) && !cap.includes(value)) ||
+            (typeof value === 'number' && (value < cap.min || value > cap.max))
           )
-            await camera.set(key, value);
+            throw new Error(`Remembered ${key} is unavailable for this camera.`);
+          const feedback = await camera.set(key, value);
+          if (feedback) restoreMessages.push(feedback);
+        } catch (e) {
+          if (session.value.frames.length && ['focusMode', 'focusDistance', 'zoom'].includes(key))
+            throw e;
+          restoreMessages.push((e as Error).message);
         }
-      } else {
+      }
+      if (restoreMessages.length) notice.value = restoreMessages.join(' ');
+      if (!session.value.frames.length) {
         session.value.width = camera.settings.width;
         session.value.height = camera.settings.height;
         resetFocus();
@@ -262,6 +480,7 @@ export function useCalibration() {
       session.value.source = 'camera';
       await enumerate();
       deviceId.value = camera.settings.deviceId ?? deviceId.value;
+      if (!session.value.frames.length) rememberCamera();
       if (video.value) {
         video.value.srcObject = stream;
         await video.value.play();
@@ -275,37 +494,61 @@ export function useCalibration() {
       connecting.value = false;
     }
   }
+  const pendingControls = new Map<string, string | number>();
   async function changeControl(key: string, value: string | number) {
-    if (!connected.value || cameraBusy.value) return;
+    if (!connected.value || connecting.value || checkingCamera.value || savingFrame.value) return;
+    pendingControls.set(key, value);
+    if (changingControl.value) return;
     changingControl.value = true;
     controlGeneration++;
     manual = false;
     gate.reset();
     captureProgress.value = 0;
     error.value = '';
+    captureReason.value = 'Applying camera settings…';
+    const generation = loopGeneration;
     try {
-      if (session.value.frames.length && ['zoom', 'focusDistance', 'focusMode'].includes(key))
-        throw new Error('Start a new calibration before changing focus or zoom.');
-      await camera.set(key, value);
-      settings.value = { ...camera.settings };
-      controls.value = camera.controls();
-      session.value.settings = { ...camera.settings };
-      bestFocus.value = 0;
-      focusHistory.value = [];
-      if (['zoom', 'focusDistance', 'focusMode'].includes(key)) {
-        session.value.focusConfirmed = false;
-        if (step.value === 2) {
-          auto.value = false;
-          step.value = 1;
-          notice.value = 'Confirm focus before capturing with the new lens settings.';
+      while (pendingControls.size && connected.value && generation === loopGeneration) {
+        const [key, value] = pendingControls.entries().next().value!;
+        pendingControls.delete(key);
+        try {
+          if (session.value.frames.length && ['zoom', 'focusDistance', 'focusMode'].includes(key))
+            throw new Error('Start a new calibration before changing focus or zoom.');
+          const feedback = await camera.set(key, value);
+          if (generation !== loopGeneration || disposed) break;
+          notice.value = feedback;
+          settings.value = { ...camera.settings };
+          controls.value = camera.controls();
+          session.value.settings = { ...camera.settings };
+          bestFocus.value = 0;
+          focusHistory.value = [];
+          if (['zoom', 'focusDistance', 'focusMode'].includes(key)) {
+            session.value.focusConfirmed = false;
+            if (step.value === 2) {
+              stopCapture();
+              step.value = 1;
+              notice.value = 'Confirm focus before capturing with the new lens settings.';
+            }
+          }
+          rememberCamera();
+        } catch (e) {
+          if (generation === loopGeneration && !disposed) {
+            settings.value = { ...camera.settings };
+            message(e);
+          }
         }
       }
-      await persist();
-    } catch (e) {
-      settings.value = { ...camera.settings };
-      message(e);
+      if (generation === loopGeneration) await persist();
     } finally {
+      pendingControls.clear();
       changingControl.value = false;
+      gate.reset();
+      restartTimer();
+      if (captureRunning.value)
+        captureReason.value =
+          captureMode.value === 'timer'
+            ? 'Timer running. Move to a new view.'
+            : 'Estimating motion…';
     }
   }
   function startLoop() {
@@ -317,12 +560,7 @@ export function useCalibration() {
     const tick = async (now: number, metadata: VideoFrameCallbackMetadata) => {
       if (disposed || generation !== loopGeneration || !video.value) return;
       try {
-        if (
-          engineState.value !== 'ready' ||
-          working.value ||
-          cameraBusy.value ||
-          step.value === 3
-        ) {
+        if (engineState.value !== 'ready' || working.value || cameraBusy.value) {
           schedule();
           return;
         }
@@ -376,50 +614,67 @@ export function useCalibration() {
         }
         if (step.value === 2) {
           const status = gate.update(a, frameTime, session.value.width, settings.value);
-          captureReason.value = status.reason;
+          if (captureMode.value !== 'timer') captureReason.value = status.reason;
           captureProgress.value = auto.value ? status.progress : 0;
-          if ((auto.value && status.capture) || manual) {
+          const timed =
+            captureRunning.value && captureMode.value === 'timer' && timer.due(frameTime);
+          if ((auto.value && status.capture) || timed || manual) {
+            const override = manual;
             manual = false;
-            if (!a.valid) {
-              notice.value = a.reason;
-            } else {
-              const shot = await vision.call<{ analysis: Analysis; blob: Blob }>('capture', {
-                token: a.token,
-                board: { ...session.value.board },
-              });
-              if (generation !== loopGeneration) return;
-              if (frameControlGeneration !== controlGeneration) {
-                schedule();
-                return;
+            try {
+              const previous = session.value.frames.at(-1)?.corners ?? [];
+              if (!a.valid) captureReason.value = `Skipped: ${a.reason}`;
+              else if (!override && duplicateView(previous, a.corners, session.value.width))
+                captureReason.value = 'Skipped: move or tilt the board for a different view';
+              else {
+                const shot = await vision.call<CaptureResult>('capture', {
+                  token: a.token,
+                  board: { ...session.value.board },
+                });
+                if (generation !== loopGeneration) return;
+                if (frameControlGeneration !== controlGeneration) {
+                  schedule();
+                  return;
+                }
+                if (!shot.accepted) captureReason.value = `Skipped: ${shot.analysis.reason}`;
+                else if (
+                  !override &&
+                  duplicateView(previous, shot.analysis.corners, session.value.width)
+                )
+                  captureReason.value = 'Skipped: move or tilt the board for a different view';
+                else {
+                  savingFrame.value = true;
+                  try {
+                    await storage.addFrame(
+                      session.value,
+                      {
+                        id: crypto.randomUUID(),
+                        name: `Capture ${session.value.frames.length + 1}`,
+                        capturedAt: Date.now(),
+                        corners: shot.analysis.corners,
+                        included: true,
+                        source: 'camera',
+                        sharpness: shot.analysis.sharpness,
+                      },
+                      shot.blob,
+                    );
+                    gate.captured(shot.analysis.corners, performance.now());
+                    captureFlash.value = true;
+                    setTimeout(() => (captureFlash.value = false), 180);
+                    captureReason.value = 'Captured. Move to a new view.';
+                    await refreshSessions();
+                  } finally {
+                    savingFrame.value = false;
+                  }
+                }
               }
-              savingFrame.value = true;
-              try {
-                await storage.addFrame(
-                  session.value,
-                  {
-                    id: crypto.randomUUID(),
-                    name: `Capture ${session.value.frames.length + 1}`,
-                    capturedAt: Date.now(),
-                    corners: shot.analysis.corners,
-                    included: true,
-                    source: 'camera',
-                    sharpness: shot.analysis.sharpness,
-                  },
-                  shot.blob,
-                );
-                gate.captured(shot.analysis.corners, frameTime);
-                captureFlash.value = true;
-                setTimeout(() => (captureFlash.value = false), 180);
-                captureReason.value = 'Captured. Move to a new view.';
-                await refreshSessions();
-              } finally {
-                savingFrame.value = false;
-              }
+            } finally {
+              restartTimer();
             }
           }
         }
       } catch (e) {
-        auto.value = false;
+        stopCapture();
         manual = false;
         message(e);
         gate.reset();
@@ -459,7 +714,7 @@ export function useCalibration() {
       notice.value = 'Capture at least 12 images, then calibrate.';
       return;
     }
-    auto.value = false;
+    stopCapture();
     manual = false;
     gate.reset();
     step.value = value;
@@ -482,6 +737,7 @@ export function useCalibration() {
       controls.value = camera.controls();
       session.value.settings = { ...camera.settings };
       session.value.focusConfirmed = true;
+      rememberCamera();
       await persist();
       step.value = 2;
       gate.reset();
@@ -490,6 +746,7 @@ export function useCalibration() {
     }
   }
   function selectRegion(x: number, y: number) {
+    ({ x, y } = previewPoint(x, y, previewRotated.value));
     roi.value = {
       x: Math.max(0, Math.min(0.7, x - 0.15)),
       y: Math.max(0, Math.min(0.7, y - 0.15)),
@@ -537,7 +794,7 @@ export function useCalibration() {
   async function importImages() {
     if (!importAgreement.value || !pendingImports.value.length) return;
     working.value = true;
-    auto.value = false;
+    stopCapture();
     error.value = '';
     importErrors.value = [];
     try {
@@ -556,10 +813,11 @@ export function useCalibration() {
             [bitmap],
           );
           if (!a.valid) throw new Error(a.reason);
-          const shot = await vision.call<{ analysis: Analysis; blob: Blob }>('capture', {
+          const shot = await vision.call<CaptureResult>('capture', {
             token: a.token,
             board: { ...session.value.board },
           });
+          if (!shot.accepted) throw new Error(shot.analysis.reason);
           await storage.addFrame(
             session.value,
             {
@@ -590,7 +848,7 @@ export function useCalibration() {
   async function calibrate() {
     if (!canSolve.value) return;
     working.value = true;
-    auto.value = false;
+    stopCapture();
     error.value = '';
     progress.value = 'Preparing calibration…';
     const operation = ++operationGeneration;
@@ -629,7 +887,7 @@ export function useCalibration() {
     if (!result.value || included.value.length < 24 || working.value) return;
     working.value = true;
     error.value = '';
-    auto.value = false;
+    stopCapture();
     const request = solveRequest(session.value);
     const operation = ++operationGeneration;
     try {
@@ -702,6 +960,9 @@ export function useCalibration() {
     if (working.value) return;
     try {
       await storage.removeFrame(session.value, id);
+      gate.reset(true);
+      const previous = session.value.frames.at(-1);
+      if (previous) gate.captured(previous.corners, -Infinity);
       await refreshSessions();
     } catch (e) {
       message(e);
@@ -711,7 +972,15 @@ export function useCalibration() {
     if (working.value || cameraBusy.value) return;
     stopCamera();
     await persist();
-    session.value = newSession();
+    loadingPreferences = true;
+    session.value = {
+      ...newSession(),
+      board: { ...preferences.board },
+      fov: preferences.cameras[deviceId.value]?.fov ?? 90,
+    };
+    loadingPreferences = false;
+    gate.reset(true);
+    loadCameraPreferences();
     step.value = 0;
     analysis.value = undefined;
     pendingImports.value = [];
@@ -724,8 +993,15 @@ export function useCalibration() {
     if (working.value || cameraBusy.value) return;
     stopCamera();
     clearCameraSetup();
+    loadingPreferences = true;
     session.value = JSON.parse(JSON.stringify(saved));
     deviceId.value = typeof saved.settings.deviceId === 'string' ? saved.settings.deviceId : '';
+    loadingPreferences = false;
+    loadCameraPreferences();
+    gate.reset(true);
+    if (saved.frames.length) {
+      gate.captured(saved.frames.at(-1)!.corners, -Infinity);
+    }
     step.value = saved.result ? 3 : saved.frames.length ? 2 : 0;
     analysis.value = undefined;
     pendingImports.value = [];
@@ -745,7 +1021,7 @@ export function useCalibration() {
   }
   async function exportArchive() {
     try {
-      auto.value = false;
+      stopCapture();
       archiveProgress.value = 0;
       const saved = JSON.parse(JSON.stringify(session.value));
       download(
@@ -785,7 +1061,7 @@ export function useCalibration() {
         reader.readAsDataURL(blob);
       });
       const mm = (Math.max(b.columns, b.rows) * b.squareSize * 1000) / 0.9875;
-      const html = `<!doctype html><html lang="en"><meta charset="utf-8"><title>PhotonCal calibration target</title><style>@page{size:auto;margin:5mm}body{margin:0;font:12px sans-serif}img{display:block;width:${mm}mm;height:${mm}mm}p{max-width:180mm}@media print{button{display:none}}</style><button onclick="window.print()">Print at 100%</button><img alt="Calibration target" src="${data}"><p>PhotonCal ${b.kind}, ${b.columns} × ${b.rows} squares. Measure the printed square: ${(b.squareSize * 1000).toFixed(3)} mm. ${b.kind === 'charuco' ? `Marker: ${(b.markerSize * 1000).toFixed(3)} mm, dictionary ${b.dictionary}, legacy ${b.legacy}.` : ''} Print at actual size (100%), disable fit-to-page, and mount on a flat rigid backing. Use larger paper if needed.</p></html>`;
+      const html = `<!doctype html><html lang="en"><meta charset="utf-8"><title>PhotonCal calibration target</title><style>@page{size:auto;margin:5mm}body{margin:0;font:12px sans-serif}img{display:block;width:${mm}mm;height:${mm}mm}p{max-width:180mm}@media print{button{display:none}}</style><button onclick="window.print()">Print at 100%</button><img alt="Calibration target" src="${data}"><p>PhotonCal ${b.kind}, ${b.rows} rows × ${b.columns} columns of squares. Measure the printed square: ${(b.squareSize * 1000).toFixed(3)} mm. ${b.kind === 'charuco' ? `Marker: ${(b.markerSize * 1000).toFixed(3)} mm, dictionary ${b.dictionary}, legacy ${b.legacy}.` : ''} Print at actual size (100%), disable fit-to-page, and mount on a flat rigid backing. Use larger paper if needed.</p></html>`;
       download(new Blob([html], { type: 'text/html' }), 'photoncal_target_print.html');
     } catch (e) {
       message(e);
@@ -799,14 +1075,28 @@ export function useCalibration() {
     try {
       await refreshSessions();
       await enumerate();
+      if (
+        deviceId.value &&
+        devices.value.some((d) => d.deviceId) &&
+        !devices.value.some((d) => d.deviceId === deviceId.value)
+      ) {
+        deviceId.value = '';
+        loadCameraPreferences();
+      }
     } catch (e) {
       message(e);
     }
     void loadEngine();
     navigator.mediaDevices?.addEventListener('devicechange', enumerate);
+    document.addEventListener('visibilitychange', visibilityChanged);
+    clockId = setInterval(() => {
+      timerClock.value = performance.now();
+    }, 100);
   });
   onUnmounted(() => {
     disposed = true;
+    clearInterval(clockId);
+    document.removeEventListener('visibilitychange', visibilityChanged);
     cancelCameraCheck();
     stopCamera();
     vision.cancel();
@@ -815,6 +1105,16 @@ export function useCalibration() {
   });
   return {
     session,
+    boardUnit,
+    previewRotated,
+    updateBoard,
+    captureMode,
+    captureRunning,
+    timerSeconds,
+    timerCountdown,
+    toggleCapture,
+    stopCapture,
+    changingControl,
     step,
     video,
     magnifier,

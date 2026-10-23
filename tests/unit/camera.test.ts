@@ -115,3 +115,43 @@ it('switches to manual exposure on cameras that require a shutter value with the
   await camera.set('exposureMode', 'continuous');
   expect(camera.settings.exposureMode).toBe('continuous');
 });
+
+it('reports exposure readback rounding and still rejects ignored exposure changes', async () => {
+  const settings = { ...mode, exposureMode: 'manual', exposureTime: 100 };
+  const m = media(settings, {
+    exposureMode: ['continuous', 'manual'],
+    exposureTime: { min: 10, max: 1000, step: 5 },
+  });
+  const camera = new Camera();
+  await camera.connect('usb1', mode);
+  m.track.applyConstraints.mockImplementation(async () => {
+    settings.exposureTime = 125;
+  });
+  expect(await camera.set('exposureTime', 120)).toContain('requested 12 ms');
+  expect(camera.settings.exposureTime).toBe(125);
+  await expect(camera.set('exposureTime', 200)).rejects.toThrow('did not apply');
+});
+
+it('does not claim a setting was verified when readback is absent', async () => {
+  media({ ...mode }, { brightness: { min: 0, max: 100, step: 1 } });
+  const camera = new Camera();
+  await camera.connect('usb1', mode);
+  expect(await camera.set('brightness', 20)).toContain('could not be verified');
+});
+
+it('ignores settings returned by a track replaced during an adjustment', async () => {
+  const m = media({ ...mode, brightness: 10 });
+  const camera = new Camera();
+  await camera.connect('usb1', mode);
+  let release!: () => void;
+  m.track.applyConstraints.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const change = camera.set('brightness', 20);
+  camera.stop();
+  release();
+  await expect(change).rejects.toThrow('Camera changed');
+});

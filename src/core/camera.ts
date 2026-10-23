@@ -1,3 +1,4 @@
+import { exposureScale, exposureLabel } from './exposure';
 export interface Control {
   key: string;
   label: string;
@@ -122,6 +123,14 @@ export class Camera {
   async set(key: string, value: string | number) {
     const track = this.stream?.getVideoTracks()[0];
     if (!track) throw new Error('Connect a camera first.');
+    const previous = (track.getSettings() as Record<string, any>)[key];
+    const original = value;
+    if (key === 'exposureTime' && typeof value === 'number') {
+      if (!Number.isFinite(value) || value <= 0) throw new Error('Enter a positive exposure time.');
+      const range = this.capabilities.exposureTime;
+      if (range?.max > range?.min)
+        value = exposureScale(range, /Windows/.test(navigator.userAgent ?? '')).snap(value);
+    }
     const requested: Record<string, string | number> = { [key]: value };
     if (key === 'exposureMode' && value === 'manual') {
       // Chromium's Windows backend commits manual exposure only when a shutter
@@ -140,6 +149,8 @@ export class Camera {
     }
     // Keep the selected resolution/FPS and no-resizing constraint when adjusting controls.
     await track.applyConstraints({ ...this.constraints, advanced: [requested] });
+    if (this.stream?.getVideoTracks()[0] !== track)
+      throw new DOMException('Camera changed while applying settings.', 'AbortError');
     this.settings = track.getSettings();
     this.capabilities = track.getCapabilities?.() ?? {};
     const actual = this.settings[key];
@@ -147,15 +158,34 @@ export class Camera {
       actual !== undefined &&
       (typeof value === 'string'
         ? actual !== value
-        : Math.abs(actual - value) > (this.capabilities[key]?.step || 0.001))
+        : Math.abs(actual - value) >
+          (key === 'exposureTime' ? 0.000001 : this.capabilities[key]?.step || 0.001)) &&
+      !(
+        key === 'exposureTime' &&
+        typeof actual === 'number' &&
+        Number.isFinite(actual) &&
+        actual > 0 &&
+        actual !== previous
+      )
     )
       throw new Error(
-        `The camera did not apply ${cameraControlDefinitions.find((c) => c.key === key)?.label.toLowerCase() ?? key} (${value}). Its current value is ${actual}.`,
+        key === 'exposureTime'
+          ? `The camera did not apply ${exposureLabel(value)}. Its current exposure is ${exposureLabel(actual)}.`
+          : `The camera did not apply ${cameraControlDefinitions.find((c) => c.key === key)?.label.toLowerCase() ?? key} (${value}). Its current value is ${actual}.`,
       );
     if (key === 'exposureTime' && this.settings.exposureMode !== 'manual')
       throw new Error(
         'The camera did not enable manual exposure. Try changing exposure mode again.',
       );
+    if (actual === undefined)
+      return 'The camera did not report this setting; the change could not be verified.';
+    if (
+      key === 'exposureTime' &&
+      typeof original === 'number' &&
+      Math.abs(actual - original) > 0.000001
+    )
+      return `Camera exposure: ${exposureLabel(actual)} (requested ${exposureLabel(original)}). The camera supports discrete exposure steps.`;
+    return '';
   }
   stop() {
     this.generation++;

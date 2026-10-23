@@ -25,11 +25,13 @@
     "fflate": "0.8.3",
     "idb": "8.0.3",
     "lucide-vue-next": "0.468.0",
+    "three": "0.186.1",
     "vue": "3.5.22"
   },
   "devDependencies": {
     "@playwright/test": "1.56.0",
     "@types/node": "22.18.8",
+    "@types/three": "0.186.0",
     "@vitejs/plugin-vue": "6.0.1",
     "fake-indexeddb": "^6.2.4",
     "prettier": "3.6.2",

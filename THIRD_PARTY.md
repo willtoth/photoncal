@@ -12,7 +12,7 @@ PhotonCal's own code is GPL-3.0-or-later, without warranty. Copyright remains wi
 | OpenBLAS                                      | `2e8a9520aca83bc16d06ee0ca850acfcd9d365d1`              | BSD-3-Clause; bundled LAPACK: modified BSD                                    |
 | Eigen                                         | 3.4.0                                                   | MPL-2.0 and file-specific permissive/LGPL licenses                            |
 | nlohmann/json                                 | 3.11.3                                                  | MIT                                                                           |
-| Vue, idb, fflate                              | See package-lock.json                                   | MIT                                                                           |
+| Vue, idb, fflate, Three.js                    | See package-lock.json                                   | MIT                                                                           |
 | Lucide icons                                  | 0.468.0                                                 | ISC and MIT, as specified in its LICENSE                                      |
 | PhotonVision real-image/corner fixtures       | PhotonVision `82f7f4c38cd6d2676cdbcb28762e1693c54e96e0` | PhotonVision GPL-3.0-or-later repository                                      |
 
