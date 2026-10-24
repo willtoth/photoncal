@@ -13,6 +13,7 @@
 
 #include "json.hpp"
 #include "mrcal-uncertainty.hpp"
+#include "uncertainty-distance.hpp"
 #include "mrcal_wrapper.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten/bind.h>
@@ -257,15 +258,23 @@ std::string uncertainty(const std::string& input) {
     int cols = request.value("gridWidth", 60), rows = request.value("gridHeight", 40);
     if (cols < 2 || rows < 2 || cols > 100 || rows > 100)
       throw std::runtime_error("Invalid uncertainty grid");
-    auto grid = compute_uncertainty(d.points, intrinsics, d.poses, warp, {d.width, d.height},
-                                    d.board.grid(), d.board.spacing, {cols, rows});
+    double distance = request.value("distance", 0.0);
+    if (!std::isfinite(distance) || distance < 0)
+      throw std::runtime_error("Invalid working distance");
+    auto grid = distance > 0
+                    ? compute_uncertainty_at_distance(d.points, intrinsics, d.poses, warp,
+                                                     {d.width, d.height}, d.board.grid(),
+                                                     d.board.spacing, {cols, rows}, distance)
+                    : compute_uncertainty(d.points, intrinsics, d.poses, warp,
+                                          {d.width, d.height}, d.board.grid(), d.board.spacing,
+                                          {cols, rows});
     json values = json::array();
     for (auto& p : grid) values.push_back(std::isfinite(p.z) ? json(p.z) : json(nullptr));
     return json{{"width", cols},
                 {"height", rows},
                 {"values", values},
                 {"method", "mean-pcam"},
-                {"distance", "infinity"}};
+                {"distance", distance > 0 ? json(distance) : json("infinity")}};
   });
 }
 std::string compareModels(const std::string& input) {

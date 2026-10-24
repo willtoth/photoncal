@@ -5,6 +5,7 @@ import { currentResult } from '../core/types';
 import { coverage } from '../core/capture';
 import { Download, Archive, ScanLine, AlertTriangle } from 'lucide-vue-next';
 import DiagnosticPlot from './DiagnosticPlot.vue';
+import ResultsDiagnostics from './ResultsDiagnostics.vue';
 const CalibrationScene = defineAsyncComponent(() => import('./CalibrationScene.vue'));
 const props = defineProps<{ session: Session; working: boolean }>();
 const emit = defineEmits<{
@@ -79,9 +80,101 @@ const uncertainty95 = computed(() => {
       <div class="metric">
         <span>95th percentile uncertainty</span
         ><strong>{{ uncertainty95?.toFixed(3) ?? '—' }} <small>px</small></strong>
-        <p>At infinity · sampling noise</p>
+        <p>Spatial p95 · at infinity · sampling standard deviation</p>
       </div>
     </div>
+    <section class="export-panel">
+      <div>
+        <h3>Export calibration</h3>
+        <p>
+          Use this JSON in PhotonVision with the same camera at {{ session.width }} ×
+          {{ session.height }}, with focus and zoom unchanged.
+        </p>
+        <p class="small muted">
+          JSON contains calibration parameters. The session archive also includes images and
+          diagnostics.
+        </p>
+      </div>
+      <div class="export-buttons">
+        <button class="button primary" :disabled="!fresh || working" @click="emit('download')">
+          <Download :size="18" />Download PhotonVision JSON</button
+        ><button class="button" :disabled="working" @click="emit('archive')">
+          <Archive :size="18" />Save session archive
+        </button>
+      </div>
+    </section>
+    <div class="result-actions">
+      <button class="button" :disabled="working" @click="emit('capture')">
+        Add or review images</button
+      ><button
+        v-if="!fresh"
+        class="button primary"
+        :disabled="working"
+        @click="emit('recalibrate')"
+      >
+        Recalibrate selected images</button
+      ><a href="https://mrcal.secretsauce.net/how-to-calibrate.html" target="_blank" rel="noopener"
+        >Understanding calibration quality</a
+      >
+    </div>
+    <section class="panel">
+      <h3>Camera model</h3>
+      <dl class="model-details">
+        <div>
+          <dt>Resolution</dt>
+          <dd>{{ session.width }} × {{ session.height }}</dd>
+        </div>
+        <div>
+          <dt>Focal lengths · fx, fy</dt>
+          <dd>
+            {{
+              result.intrinsics
+                .slice(0, 2)
+                .map((v) => v.toFixed(3))
+                .join(', ')
+            }}
+            px
+          </dd>
+        </div>
+        <div>
+          <dt>Optical center · cx, cy</dt>
+          <dd>
+            {{
+              result.intrinsics
+                .slice(2, 4)
+                .map((v) => v.toFixed(3))
+                .join(', ')
+            }}
+            px
+          </dd>
+        </div>
+        <div>
+          <dt>Pinhole-equivalent horizontal FOV</dt>
+          <dd>
+            {{
+              (
+                (2 * Math.atan(session.width / (2 * result.intrinsics[0]!)) * 180) /
+                Math.PI
+              ).toFixed(1)
+            }}°
+          </dd>
+        </div>
+        <div>
+          <dt>Board warp · x, y</dt>
+          <dd>{{ result.warp.map((v) => (v * 1000).toFixed(3)).join(', ') }} mm</dd>
+        </div>
+      </dl>
+      <details>
+        <summary>Distortion coefficients</summary>
+        <code class="coefficients">{{
+          result.intrinsics
+            .slice(4)
+            .map((v) => v.toPrecision(7))
+            .join(', ')
+        }}</code>
+        <p class="small muted">k₁, k₂, p₁, p₂, k₃, k₄, k₅, k₆</p>
+      </details>
+    </section>
     <div v-if="issues.length" class="findings">
       <p v-for="issue in issues" :key="issue"><AlertTriangle :size="16" />{{ issue }}</p>
     </div>
@@ -158,98 +251,13 @@ const uncertainty95 = computed(() => {
           Both sets can share the same systematic error, even when their results agree.
         </p>
       </section>
-      <section class="panel">
-        <h3>Camera model</h3>
-        <dl class="model-details">
-          <div>
-            <dt>Resolution</dt>
-            <dd>{{ session.width }} × {{ session.height }}</dd>
-          </div>
-          <div>
-            <dt>Focal lengths · fx, fy</dt>
-            <dd>
-              {{
-                result.intrinsics
-                  .slice(0, 2)
-                  .map((v) => v.toFixed(3))
-                  .join(', ')
-              }}
-              px
-            </dd>
-          </div>
-          <div>
-            <dt>Optical center · cx, cy</dt>
-            <dd>
-              {{
-                result.intrinsics
-                  .slice(2, 4)
-                  .map((v) => v.toFixed(3))
-                  .join(', ')
-              }}
-              px
-            </dd>
-          </div>
-          <div>
-            <dt>Pinhole-equivalent horizontal FOV</dt>
-            <dd>
-              {{
-                (
-                  (2 * Math.atan(session.width / (2 * result.intrinsics[0]!)) * 180) /
-                  Math.PI
-                ).toFixed(1)
-              }}°
-            </dd>
-          </div>
-          <div>
-            <dt>Board warp · x, y</dt>
-            <dd>{{ result.warp.map((v) => (v * 1000).toFixed(3)).join(', ') }} mm</dd>
-          </div>
-        </dl>
-        <details>
-          <summary>Distortion coefficients</summary>
-          <code class="coefficients">{{
-            result.intrinsics
-              .slice(4)
-              .map((v) => v.toPrecision(7))
-              .join(', ')
-          }}</code>
-          <p class="small muted">k₁, k₂, p₁, p₂, k₃, k₄, k₅, k₆</p>
-        </details>
-      </section>
     </div>
-    <section class="export-panel">
-      <div>
-        <h3>Export calibration</h3>
-        <p>
-          Use this JSON in PhotonVision with the same camera at {{ session.width }} ×
-          {{ session.height }}, with focus and zoom unchanged.
-        </p>
-        <p class="small muted">
-          JSON contains calibration parameters. The session archive also includes images and
-          diagnostics.
-        </p>
-      </div>
-      <div class="export-buttons">
-        <button class="button primary" :disabled="!fresh || working" @click="emit('download')">
-          <Download :size="18" />Download PhotonVision JSON</button
-        ><button class="button" :disabled="working" @click="emit('archive')">
-          <Archive :size="18" />Save session archive
-        </button>
-      </div>
-    </section>
-    <div class="result-actions">
-      <button class="button" :disabled="working" @click="emit('capture')">
-        Add or review images</button
-      ><button
-        v-if="!fresh"
-        class="button primary"
-        :disabled="working"
-        @click="emit('recalibrate')"
-      >
-        Recalibrate selected images</button
-      ><a href="https://mrcal.secretsauce.net/how-to-calibrate.html" target="_blank" rel="noopener"
-        >Understanding calibration quality</a
-      >
-    </div>
+
+    <ResultsDiagnostics
+      v-if="fresh"
+      :session="session"
+      :working="working"
+      @inspect="emit('inspect', $event)"
+    />
   </div>
 </template>

@@ -373,8 +373,12 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
           'has-captures': session.frames.length > 0,
         }"
       >
-        <div class="live-workspace" :class="{ 'live-workspace-wide': session.source === 'import' }">
-          <section v-show="step < 3 || connected" class="preview-panel">
+        <div
+          v-show="step < 3"
+          class="live-workspace"
+          :class="{ 'live-workspace-wide': session.source === 'import' }"
+        >
+          <section v-show="step < 3" class="preview-panel">
             <div class="preview-heading">
               <span
                 ><span class="live-dot" :class="{ on: connected }" />{{
@@ -522,7 +526,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
             </div>
           </section>
           <CameraControls
-            v-if="session.source === 'camera'"
+            v-if="step < 3 && session.source === 'camera'"
             :controls="controls"
             :settings="settings"
             :locked="!!session.frames.length"
@@ -616,7 +620,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
         <div
           class="workspace"
           :class="{
-            'workspace-results': step === 3 && session.source === 'camera',
+            'workspace-results': step === 3,
             'workspace-wide': step === 3,
           }"
         >
@@ -738,7 +742,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               @remove="deleteFrame"
             />
           </div>
-          <div v-if="step < 3 || session.source === 'camera'" class="workspace-side">
+          <div v-if="step < 3" class="workspace-side">
             <template v-if="step === 0">
               <section class="panel camera-setup">
                 <div class="panel-heading">

@@ -7,6 +7,7 @@ const props = defineProps<{
   width: number;
   height: number;
   mode?: 'magnitude' | 'direction';
+  scaleMax?: number;
 }>();
 const canvas = ref<HTMLCanvasElement>(),
   maximum = ref(0);
@@ -21,7 +22,7 @@ function draw() {
   if (props.grid) {
     const vals = props.grid.values.filter((v): v is number => v !== null && Number.isFinite(v));
     const sorted = [...vals].sort((a, b) => a - b);
-    maximum.value = sorted[Math.floor(sorted.length * 0.95)] ?? 1;
+    maximum.value = props.scaleMax ?? sorted[Math.floor(sorted.length * 0.95)] ?? 1;
     const w = el.width / props.grid.width,
       h = el.height / props.grid.height;
     props.grid.values.forEach((v, i) => {
@@ -69,7 +70,7 @@ function draw() {
   }
 }
 onMounted(draw);
-watch(() => [props.grid, props.residuals, props.mode], draw, { deep: true });
+watch(() => [props.grid, props.residuals, props.mode, props.scaleMax], draw, { deep: true });
 </script>
 <template>
   <div class="diagnostic-plot">

@@ -64,6 +64,9 @@ string(REPLACE "double mean = sum / x.size();" "double mean = sum / num_measurem
 string(REPLACE "(sum_sq / x.size())" "(sum_sq / num_measurements_board)" UNCERTAINTY "${UNCERTAINTY}")
 string(REPLACE "double observed_pixel_uncertainty =\n      _observed_pixel_uncertainty_from_inputs(x, Nmeasurements_boards, imeas0);" "std::vector<double> inlier_residuals;\n  for (int i = 0; i < Nmeasurements_boards / 2; ++i) if (observations_board_pool[i].z > 0) { inlier_residuals.push_back(x[imeas0 + 2*i]); inlier_residuals.push_back(x[imeas0 + 2*i + 1]); }\n  if (inlier_residuals.empty()) throw std::runtime_error(\"No inliers for uncertainty\");\n  double observed_pixel_uncertainty = _observed_pixel_uncertainty_from_inputs(inlier_residuals, inlier_residuals.size(), 0);" UNCERTAINTY "${UNCERTAINTY}")
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/uncertainty.cpp "#include <mrcal.h>\n#include <internal.h>\n${UNCERTAINTY}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/uncertainty-distance.inc)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/uncertainty-distance.inc DISTANCE_UNCERTAINTY)
+file(APPEND ${CMAKE_CURRENT_BINARY_DIR}/uncertainty.cpp "\n${DISTANCE_UNCERTAINTY}\n")
 
 add_library(calibration STATIC
   ${CMAKE_CURRENT_BINARY_DIR}/mrcal_wrapper.cpp

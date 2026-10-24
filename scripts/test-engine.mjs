@@ -69,6 +69,29 @@ for (const partial of [false, true]) {
   );
   for (let i = 0; i < ua.values.length; i++)
     assert(Math.abs(ua.values[i] - ub.values[i]) < 0.01, `Uncertainty mismatch at ${i}`);
+  for (const distance of [0.5, 3, 1e8]) {
+    const input = { ...request, result: a, distance, gridWidth: 12, gridHeight: 8 };
+    const finite = wasm('uncertainty', input);
+    const reference = native('uncertainty', input);
+    assert.equal(finite.distance, distance);
+    for (let i = 0; i < finite.values.length; i++) {
+      assert(Number.isFinite(finite.values[i]) && finite.values[i] >= 0);
+      assert(Math.abs(finite.values[i] - reference.values[i]) < 0.001);
+      if (distance === 1e8)
+        assert(
+          Math.abs(finite.values[i] - ua.values[i]) < 1e-5,
+          'Finite range must converge to infinity',
+        );
+    }
+    if (distance === 0.5)
+      assert(
+        finite.values.some((v, i) => Math.abs(v - ua.values[i]) > 0.01),
+        'Finite range must include translation uncertainty',
+      );
+  }
+  assert(
+    JSON.parse(engine.uncertainty(JSON.stringify({ ...request, result: a, distance: -1 }))).error,
+  );
   const same = wasm('compare', { width: request.width, height: request.height, a, b: a });
   assert(same.mean < 1e-5, 'Identical models should match');
   await writeFile(

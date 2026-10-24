@@ -695,7 +695,7 @@ PhotonCal's own code is GPL-3.0-or-later, without warranty. Copyright remains wi
 | OpenBLAS                                      | `2e8a9520aca83bc16d06ee0ca850acfcd9d365d1`              | BSD-3-Clause; bundled LAPACK: modified BSD                                    |
 | Eigen                                         | 3.4.0                                                   | MPL-2.0 and file-specific permissive/LGPL licenses                            |
 | nlohmann/json                                 | 3.11.3                                                  | MIT                                                                           |
-| Vue, idb, fflate, Three.js                     | See package-lock.json                                   | MIT                                                                           |
+| Vue, idb, fflate, Three.js                    | See package-lock.json                                   | MIT                                                                           |
 | Lucide icons                                  | 0.468.0                                                 | ISC and MIT, as specified in its LICENSE                                      |
 | PhotonVision real-image/corner fixtures       | PhotonVision `82f7f4c38cd6d2676cdbcb28762e1693c54e96e0` | PhotonVision GPL-3.0-or-later repository                                      |
 
@@ -710,6 +710,7 @@ The build creates modified copies in `.build`; it does not modify the PhotonVisi
 3. Replace hard-coded six-frame counts in uncertainty setup with actual frame counts.
 4. Estimate observation noise from observed inlier residuals, excluding the zero placeholders for missing/rejected corners.
 5. Include mrcal's internal declarations needed for the sparse allocation count.
+6. Append `native/uncertainty-distance.inc` for finite-distance mean-pcam propagation, following the pinned mrcal Python implementation. This reuses the wrapper's sparse covariance calculation with full rotation/translation derivatives.
 
 `native/lapack-abi.c` adapts libdogleg's Fortran packed-Cholesky ABI to OpenBLAS's translated C LAPACK entry points (hidden character-length parameter and integer return). It is needed for WASM indirect-call type safety. The native reference build uses system LAPACK; numerical tests compare both implementations.
 

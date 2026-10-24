@@ -157,23 +157,16 @@ test('real board images → native WASM solve → diagnostics → PhotonVision e
   const brightness = page.getByRole('slider', { name: 'Brightness', exact: true });
   await expect(brightness).toBeEnabled();
   await page.getByRole('navigation').getByRole('button', { name: 'Results' }).click();
-  await expect(brightness).toBeEnabled();
+  await expect(brightness).toHaveCount(0);
   await page.evaluate(() => {
     (window as any).holdNextSolve = true;
   });
   await page.getByRole('button', { name: 'Recalibrate selected images', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Cancel calculation' })).toBeVisible();
-  await expect(brightness).toBeEnabled();
-  await brightness.evaluate((input) => {
-    (input as HTMLInputElement).value = '70';
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-  await expect(
-    page.locator('.camera-control').filter({ has: brightness }).locator('output'),
-  ).toHaveText('70');
+  await expect(brightness).toHaveCount(0);
   await page.evaluate(() => (window as any).releaseSolve());
   await expect(downloadButton).toBeEnabled({ timeout: 60_000 });
-  await expect(brightness).toHaveValue('70');
+  await expect(brightness).toHaveCount(0);
   await expect(page.getByRole('alert')).toHaveCount(0);
   const exported = async () => {
     const pending = page.waitForEvent('download');
@@ -182,7 +175,26 @@ test('real board images → native WASM solve → diagnostics → PhotonVision e
     return JSON.parse(await readFile((await download.path())!, 'utf8'));
   };
   const beforeRotation = await exported();
+  await page.getByRole('navigation').getByRole('button', { name: 'Capture' }).click();
   await page.getByRole('button', { name: 'Rotate preview 180°' }).click();
+  await page.getByRole('navigation').getByRole('button', { name: 'Results' }).click();
+  expect(await exported()).toEqual(beforeRotation);
+  const exportY = (await page.locator('.export-panel').boundingBox())!.y;
+  const modelY = (await page
+    .getByRole('heading', { name: 'Camera model', exact: true })
+    .boundingBox())!.y;
+  expect(exportY).toBeLessThan(modelY);
+  expect(modelY).toBeLessThan((await scene.boundingBox())!.y);
+  const residuals = page.locator('.per-image-residuals');
+  await expect(residuals.locator('img')).toBeVisible();
+  await residuals.getByLabel('Arrow magnification').selectOption('50');
+  await expect(residuals).toContainText('enlarged 50×');
+  await page.getByLabel('Regional metric').selectOption('spread');
+  await page.getByLabel('Evaluation distance').selectOption('finite');
+  await page.getByRole('button', { name: 'Compute distance map' }).click();
+  await expect(page.locator('.working-distance')).toContainText('Showing 3 m', { timeout: 60_000 });
+  await page.getByRole('button', { name: 'Compute uncertainty curve' }).click();
+  await expect(page.locator('.distance-curve')).toBeVisible({ timeout: 60_000 });
   expect(await exported()).toEqual(beforeRotation);
 
   await page.screenshot({
