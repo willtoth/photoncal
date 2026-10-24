@@ -46,13 +46,21 @@ find_package(Perl REQUIRED)
 execute_process(COMMAND ${PERL_EXECUTABLE} ${MRCAL}/minimath/minimath_generate.pl
   OUTPUT_FILE ${MRCAL}/minimath/minimath_generated.h COMMAND_ERROR_IS_FATAL ANY)
 set(PV ${PHOTONCAL_DEPS}/mrcal-java/src)
-# Keep upstream source pristine. Only deterministic seeding and a checked solve
-# status differ in our wrapper copy; see patches documented in THIRD_PARTY.md.
+# Keep upstream source pristine. Model-aware target stages, deterministic seeding,
+# and checked solve status are documented in THIRD_PARTY.md.
 file(READ ${PV}/mrcal_wrapper.cpp WRAPPER)
 string(REPLACE "std::mt19937 gen(rd());" "std::mt19937 gen(0);" WRAPPER "${WRAPPER}")
 string(REPLACE "true, intrinsics, stats.rms_reproj_error__pixels" "std::isfinite(stats.rms_reproj_error__pixels) && stats.rms_reproj_error__pixels >= 0, intrinsics, stats.rms_reproj_error__pixels" WRAPPER "${WRAPPER}")
 string(REPLACE "mrcal_lensmodel, intrinsics);" "mrcal_lensmodel, intrinsics);\n    if (!result || !result->success) return result;" WRAPPER "${WRAPPER}")
 string(REPLACE "mrcal_lensmodel, result->intrinsics);" "mrcal_lensmodel, result->intrinsics);\n    if (!result || !result->success) return result;" WRAPPER "${WRAPPER}")
+# Generalize the target stages; keep the stereographic geometry/core presolve.
+string(REPLACE "mrcal_main(" "mrcal_main_model(" WRAPPER "${WRAPPER}")
+string(REPLACE "Size cameraRes, double focal_length_guess) {" "Size cameraRes, double focal_length_guess, mrcal_lensmodel_t target_model) {" WRAPPER "${WRAPPER}")
+string(REPLACE "mrcal_lensmodel.type = MRCAL_LENSMODEL_OPENCV8;" "mrcal_lensmodel = target_model;" WRAPPER "${WRAPPER}")
+# Only the final target-model stages lock the redundant spline core.
+string(REPLACE "result = mrcal_calibrate(observations_board, frames_rt_toref, calobjectSize," "if (mrcal_lensmodel.type == MRCAL_LENSMODEL_SPLINED_STEREOGRAPHIC) options.do_optimize_intrinsics_core = false;\n    result = mrcal_calibrate(observations_board, frames_rt_toref, calobjectSize," WRAPPER "${WRAPPER}")
+string(REPLACE "// copy distortion into our big intrinsics array" "if (target_model.type == MRCAL_LENSMODEL_SPLINED_STEREOGRAPHIC) std::fill(seedDistortions.begin(), seedDistortions.end(), 0.0);\n    // copy distortion into our big intrinsics array" WRAPPER "${WRAPPER}")
+string(REPLACE "case CameraLensModel::LENSMODEL_OPENCV8:\n    mrcal_lensmodel = target_model;" "case CameraLensModel::LENSMODEL_OPENCV8:\n    mrcal_lensmodel.type = MRCAL_LENSMODEL_OPENCV8;" WRAPPER "${WRAPPER}")
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/mrcal_wrapper.cpp "${WRAPPER}")
 file(READ ${PV}/mrcal-uncertainty.cpp UNCERTAINTY)
 string(REPLACE "int N_j_nonzero = Nstate * Nmeasurements;" "int N_j_nonzero = _mrcal_num_j_nonzero(Nobservations_board, 0, nullptr, 0, calibration_object_width_n, calibration_object_height_n, 1, 0, rt_ref_frame.size(), 0, 0, observations_board, nullptr, problem_selections, &lensmodel);" UNCERTAINTY "${UNCERTAINTY}")

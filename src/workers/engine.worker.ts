@@ -124,7 +124,17 @@ async function perform(op: string, args: any, base: string) {
         dest = mod._malloc(length);
       try {
         parse(
-          mod.undistort(source, dest, canvas.width, canvas.height, JSON.stringify(args.intrinsics)),
+          mod.undistort(
+            source,
+            dest,
+            canvas.width,
+            canvas.height,
+            JSON.stringify({
+              intrinsics: args.intrinsics,
+              lensModel: args.lensModel,
+              previewFov: args.previewFov,
+            }),
+          ),
         );
         canvas
           .getContext('2d')!

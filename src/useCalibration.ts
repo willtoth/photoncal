@@ -1,3 +1,4 @@
+import { OPENCV8, DEFAULT_SPLINE, modelConfig, savedFits, retainFit } from './core/lensModel';
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import {
   cameraControlDefinitions,
@@ -37,7 +38,7 @@ import {
 } from './core/preferences';
 import { previewPoint } from './core/preview';
 import * as storage from './core/storage';
-import { download, filename, photonVisionCalibration } from './core/export';
+import { download, filename, photonVisionCalibration, mrcalCameraModel } from './core/export';
 
 export function useCalibration() {
   const preferences = readPreferences();
@@ -845,7 +846,31 @@ export function useCalibration() {
       progress.value = '';
     }
   }
+  function selectModel(name: string) {
+    if (working.value) return;
+    try {
+      modelConfig(name);
+      if (session.value.result && session.value.resultRevision === session.value.revision)
+        retainFit(session.value, session.value.result, session.value.revision);
+      session.value.lensModel = name;
+      if (name !== OPENCV8) session.value.splineModel = name;
+      const fit = savedFits(session.value).find((r) => (r.lensModel ?? OPENCV8) === name);
+      if (fit) {
+        session.value.result = fit;
+        session.value.resultRevision = session.value.revision;
+      }
+      void persist();
+    } catch (e) {
+      message(e);
+    }
+  }
   async function calibrate() {
+    await runCalibration(false);
+  }
+  async function calibrateBoth() {
+    await runCalibration(true);
+  }
+  async function runCalibration(both: boolean) {
     if (!canSolve.value) return;
     working.value = true;
     stopCapture();
@@ -856,24 +881,33 @@ export function useCalibration() {
       request = solveRequest(session.value);
     solver.onProgress = (text) => (progress.value = text);
     try {
-      const calibrated = await solver.call<CalibrationResult>('solve', request);
-      if (operation !== operationGeneration) return;
-      session.value.result = calibrated;
-      session.value.resultRevision = revision;
-      await persist();
-      step.value = 3;
-      progress.value = 'Estimating projection uncertainty…';
-      try {
-        calibrated.uncertainty = await solver.call<Grid>('uncertainty', {
-          ...request,
-          result: calibrated,
-        });
-      } catch (e) {
-        calibrated.uncertaintyError = (e as Error).message;
+      const models = both
+        ? [OPENCV8, session.value.splineModel ?? DEFAULT_SPLINE]
+        : [request.lensModel ?? OPENCV8];
+      for (const lensModel of models) {
+        const input = { ...request, lensModel };
+        const calibrated = await solver.call<CalibrationResult>('solve', input);
+        if (operation !== operationGeneration) return;
+        session.value.lensModel = lensModel;
+        session.value.result = calibrated;
+        session.value.resultRevision = revision;
+        retainFit(session.value, calibrated, revision);
+        await persist();
+        step.value = 3;
+        progress.value = 'Estimating projection uncertainty…';
+        try {
+          calibrated.uncertainty = await solver.call<Grid>('uncertainty', {
+            ...input,
+            result: calibrated,
+          });
+        } catch (e) {
+          calibrated.uncertaintyError = (e as Error).message;
+        }
+        if (operation !== operationGeneration) return;
+        session.value.result = { ...calibrated };
+        retainFit(session.value, session.value.result, revision);
+        await persist();
       }
-      if (operation !== operationGeneration) return;
-      session.value.result = { ...calibrated };
-      await persist();
     } catch (e) {
       if (operation === operationGeneration) message(e);
     } finally {
@@ -931,6 +965,7 @@ export function useCalibration() {
       if (operation !== operationGeneration) return;
       session.value.result!.consistency = comparison;
       delete session.value.result!.consistencyError;
+      retainFit(session.value, session.value.result!, session.value.revision);
     } catch (e) {
       if (operation === operationGeneration)
         session.value.result!.consistencyError = (e as Error).message;
@@ -1014,6 +1049,16 @@ export function useCalibration() {
           type: 'application/json',
         }),
         `photon_calibration_${filename(session.value)}.json`,
+      );
+    } catch (e) {
+      message(e);
+    }
+  }
+  function exportMrcal() {
+    try {
+      download(
+        new Blob([mrcalCameraModel(session.value)], { type: 'text/plain' }),
+        `${filename(session.value)}.cameramodel`,
       );
     } catch (e) {
       message(e);
@@ -1176,6 +1221,9 @@ export function useCalibration() {
     chooseImages,
     importImages,
     calibrate,
+    calibrateBoth,
+    selectModel,
+    exportMrcal,
     consistency,
     cancelSolve,
     toggleFrame,

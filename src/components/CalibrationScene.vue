@@ -77,9 +77,23 @@ function overview() {
 function cameraView() {
   if (!controls || !result.value) return;
   camera.position.set(0, 0, 0);
-  camera.fov = T.MathUtils.radToDeg(
-    2 * Math.atan(props.session.height / (2 * result.value.intrinsics[1]!)),
-  );
+  const rays = result.value.modelGeometry?.boundaryRays;
+  const top = rays?.[8],
+    bottom = rays?.[40];
+  const vertical =
+    top && bottom
+      ? Math.acos(
+          Math.max(
+            -1,
+            Math.min(
+              1,
+              top.reduce((sum, v, i) => sum + v * bottom[i]!, 0),
+            ),
+          ),
+        )
+      : 2 * Math.atan(props.session.height / (2 * result.value.intrinsics[1]!));
+  // The orbit renderer is perspective; cap its overview FOV while drawing the actual lens rays.
+  camera.fov = Math.max(10, Math.min(160, T.MathUtils.radToDeg(vertical)));
   controls.target.set(0, 0, -Math.max(radius, 0.1));
   camera.updateProjectionMatrix();
   controls.update();
@@ -126,9 +140,16 @@ function rebuild(reset = false) {
   points(rejected, 0xff6767, selected.value ? 8 : 5);
   const depth = Math.max(-center.z, radius / 2);
   if (showFrustum.value) {
-    const corners = frustumPoints(r.intrinsics, props.session.width, props.session.height, depth);
+    const rays = r.modelGeometry?.boundaryRays;
+    const corners: (Point3 | null)[] = rays
+      ? rays.map((p) => (p ? ([p[0] * depth, -p[1] * depth, -p[2] * depth] as Point3) : null))
+      : frustumPoints(r.intrinsics, props.session.width, props.session.height, depth);
     lines(
-      corners.flatMap((p, i) => [[0, 0, 0] as Point3, p, p, corners[(i + 1) % 4]!]),
+      corners.flatMap((p, i) => {
+        const next = corners[(i + 1) % corners.length];
+        if (!p || !next) return [];
+        return i % (rays ? 16 : 1) === 0 ? [[0, 0, 0] as Point3, p, p, next] : [p, next];
+      }),
       0xe4b969,
       0.7,
     );
@@ -279,8 +300,8 @@ onBeforeUnmount(() => {
       </p>
       <p class="small muted">
         Camera at the origin. Axes: red X right, green Y down, blue Z forward. Coordinates in
-        meters. Outlines connect the outer calibration corners; frustum shows the pinhole model
-        without lens distortion.
+        meters. Outlines connect the outer calibration corners; frustum uses calibrated boundary
+        rays (legacy sessions use a pinhole approximation) without lens distortion.
       </p>
     </div>
   </section>

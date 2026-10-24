@@ -1,5 +1,5 @@
 // Independent Brown-Conrady projection fixture, with deterministic observation noise.
-export function syntheticDataset(count = 40, partial = false) {
+export function syntheticDataset(count = 40, partial = false, project) {
   const width = 1280,
     height = 720,
     board = {
@@ -62,10 +62,15 @@ export function syntheticDataset(count = 40, partial = false) {
         const radial =
           (1 + k1 * r2 + k2 * r2 * r2 + k3 * r2 * r2 * r2) /
           (1 + k4 * r2 + k5 * r2 * r2 + k6 * r2 * r2 * r2);
-        const x =
+        let x =
           fx * (nx * radial + 2 * p1 * nx * ny + p2 * (r2 + 2 * nx * nx)) + c0 + 0.12 * normal();
-        const y =
+        let y =
           fy * (ny * radial + p1 * (r2 + 2 * ny * ny) + 2 * p2 * nx * ny) + c1 + 0.12 * normal();
+        if (project) {
+          const q = project(cx, cy, cz);
+          x = q[0] + 0.12 * normal();
+          y = q[1] + 0.12 * normal();
+        }
         if (x < 2 || y < 2 || x >= width - 2 || y >= height - 2) continue;
         if (
           partial &&

@@ -1,3 +1,4 @@
+import { modelConfig } from './lensModel';
 import { openDB } from 'idb';
 import { Zip, ZipPassThrough, Unzip, UnzipInflate, strToU8 } from 'fflate';
 import type { Frame, Session } from './types';
@@ -163,12 +164,22 @@ export function validateSession(value: unknown): Session {
   }
   if (!Number.isFinite(s.fov) || s.fov < 10 || s.fov > 170)
     throw new Error('Invalid focal-length seed.');
-  if (s.result) {
-    const r = s.result,
-      finite = (a: unknown, n: number): a is number[] =>
-        Array.isArray(a) && a.length === n && a.every(Number.isFinite);
+  modelConfig(s.lensModel);
+  if (s.splineModel) modelConfig(s.splineModel);
+  if (
+    s.modelFits &&
+    (!Array.isArray(s.modelFits) ||
+      s.modelFits.length > 8 ||
+      s.modelFits.some((f) => !Number.isInteger(f.revision) || f.revision < 0 || !f.result))
+  )
+    throw new Error('Invalid saved model fits.');
+  for (const r of [s.result, ...(s.modelFits ?? []).map((f) => f.result)].filter(
+    (r): r is NonNullable<typeof r> => !!r,
+  )) {
+    const finite = (a: unknown, n: number): a is number[] =>
+      Array.isArray(a) && a.length === n && a.every(Number.isFinite);
     if (
-      !finite(r.intrinsics, 12) ||
+      !finite(r.intrinsics, modelConfig(r.lensModel).parameters) ||
       !finite(r.warp, 2) ||
       !Number.isFinite(r.rms) ||
       !Number.isFinite(r.mean) ||

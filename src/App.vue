@@ -30,6 +30,7 @@ import CaptureOverlay from './components/CaptureOverlay.vue';
 import FrameGallery from './components/FrameGallery.vue';
 import FrameViewer from './components/FrameViewer.vue';
 import ResultsPanel from './components/ResultsPanel.vue';
+import LensModelSettings from './components/LensModelSettings.vue';
 const {
   session,
   boardUnit,
@@ -102,6 +103,9 @@ const {
   chooseImages,
   importImages,
   calibrate,
+  calibrateBoth,
+  selectModel,
+  exportMrcal,
   consistency,
   cancelSolve,
   toggleFrame,
@@ -727,6 +731,9 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
               :session="session"
               :working="working"
               @download="exportJson"
+              @mrcal="exportMrcal"
+              @model="selectModel"
+              @both="calibrateBoth"
               @archive="exportArchive"
               @capture="setStep(2)"
               @consistency="consistency"
@@ -998,6 +1005,12 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
                 </details>
                 <details>
                   <summary>Advanced solve settings</summary>
+                  <LensModelSettings
+                    :model="session.lensModel"
+                    :spline="session.splineModel"
+                    :disabled="working || cameraBusy"
+                    @change="selectModel"
+                  />
                   <label
                     >Approximate horizontal FOV · degrees<input
                       v-model.number="session.fov"
@@ -1069,7 +1082,7 @@ onUnmounted(() => window.removeEventListener('keydown', keyboard));
     </main>
     <FrameViewer
       v-if="activeFrame"
-      :key="activeFrame"
+      :key="`${activeFrame}/${session.lensModel}`"
       :session="session"
       :frame-id="activeFrame"
       @close="activeFrame = undefined"

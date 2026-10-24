@@ -8,6 +8,7 @@ const props = defineProps<{
   height: number;
   mode?: 'magnitude' | 'direction';
   scaleMax?: number;
+  unit?: string;
 }>();
 const canvas = ref<HTMLCanvasElement>(),
   maximum = ref(0);
@@ -80,7 +81,8 @@ watch(() => [props.grid, props.residuals, props.mode, props.scaleMax], draw, { d
       role="img"
     />
     <div v-if="mode !== 'direction'" class="plot-scale">
-      <span>0 px</span><span class="gradient-scale" /><span>{{ maximum.toFixed(3) }}+ px</span>
+      <span>0 {{ unit ?? 'px' }}</span
+      ><span class="gradient-scale" /><span>{{ maximum.toFixed(3) }}+ {{ unit ?? 'px' }}</span>
     </div>
     <p v-else class="small muted">Vectors enlarged 15×; color indicates direction.</p>
   </div>

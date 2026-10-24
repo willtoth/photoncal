@@ -12,9 +12,10 @@
 #include <vector>
 
 #include "json.hpp"
+#include "lens-model.hpp"
 #include "mrcal-uncertainty.hpp"
-#include "uncertainty-distance.hpp"
 #include "mrcal_wrapper.h"
+#include "uncertainty-distance.hpp"
 #ifdef __EMSCRIPTEN__
 #include <emscripten/bind.h>
 #endif
@@ -159,10 +160,12 @@ struct Dataset {
     }
   }
 };
+#include "model-geometry.inc"
 std::string solveCalibration(const std::string& input) {
   return guarded([&] {
     json request = json::parse(input);
     Dataset d(request);
+    auto model = parse_model(request);
     const double hfov = request.value("fov", 90.0);
     if (!std::isfinite(hfov) || hfov < 10 || hfov > 170)
       throw std::runtime_error("Initial horizontal FOV must be 10–170 degrees");
@@ -170,23 +173,24 @@ std::string solveCalibration(const std::string& input) {
     for (size_t i = 0; i < d.frames.size(); ++i)
       d.poses.push_back(getSeedPose(d.points.data() + i * d.board.count(), d.board.grid(),
                                     {d.width, d.height}, d.board.spacing, focal));
-    auto r =
-        mrcal_main(d.points, d.poses, d.board.grid(), d.board.spacing, {d.width, d.height}, focal);
-    if (!r || !r->success || r->intrinsics.size() != 12 ||
+    auto r = mrcal_main_model(d.points, d.poses, d.board.grid(), d.board.spacing,
+                              {d.width, d.height}, focal, model);
+    if (!r || !r->success || r->intrinsics.size() != size_t(mrcal_lensmodel_num_params(&model)) ||
         !std::all_of(r->intrinsics.begin(), r->intrinsics.end(),
                      [](double v) { return std::isfinite(v); }) ||
         r->intrinsics[0] <= 0 || r->intrinsics[1] <= 0 || !std::isfinite(r->calobject_warp.x2) ||
         !std::isfinite(r->calobject_warp.y2))
       throw std::runtime_error(
           "Calibration did not converge. Add diverse tilted views and check target dimensions.");
-    json output = {
-        {"intrinsics", r->intrinsics}, {"warp", {r->calobject_warp.x2, r->calobject_warp.y2}},
-        {"poses", json::array()},      {"views", json::array()},
-        {"weights", json::array()},    {"solverRms", r->rms_error}};
+    json output = {{"lensModel", request.value("lensModel", "LENSMODEL_OPENCV8")},
+                   {"intrinsics", r->intrinsics},
+                   {"warp", {r->calobject_warp.x2, r->calobject_warp.y2}},
+                   {"poses", json::array()},
+                   {"views", json::array()},
+                   {"weights", json::array()},
+                   {"solverRms", r->rms_error}};
     double sum = 0, sumsq = 0;
     int total = 0, outliers = 0;
-    mrcal_lensmodel_t model{};
-    model.type = MRCAL_LENSMODEL_OPENCV8;
     for (size_t f = 0; f < d.frames.size(); ++f) {
       auto& pose = d.poses[f];
       output["poses"].push_back({pose.r.x, pose.r.y, pose.r.z, pose.t.x, pose.t.y, pose.t.z});
@@ -233,6 +237,7 @@ std::string solveCalibration(const std::string& input) {
     }
     if (total < 20 || !std::isfinite(sumsq))
       throw std::runtime_error("Too few valid corners survived outlier rejection");
+    output["modelGeometry"] = model_geometry(model, r->intrinsics, d.width, d.height);
     output["mean"] = sum / total;
     output["rms"] = std::sqrt(sumsq / total);
     output["inliers"] = total;
@@ -246,9 +251,10 @@ std::string uncertainty(const std::string& input) {
     Dataset d(request);
     auto result = request.at("result");
     auto intrinsics = result.at("intrinsics").get<std::vector<double>>();
+    auto model = parse_model(result);
+    validate_intrinsics(model, intrinsics);
     auto weights = result.at("weights").get<std::vector<double>>();
-    if (weights.size() != d.points.size() || intrinsics.size() != 12 ||
-        result["poses"].size() != d.frames.size())
+    if (weights.size() != d.points.size() || result["poses"].size() != d.frames.size())
       throw std::runtime_error("Uncertainty inputs do not match the calibrated dataset");
     for (size_t i = 0; i < weights.size(); ++i) d.points[i].z = weights[i];
     for (auto& p : result["poses"])
@@ -261,13 +267,9 @@ std::string uncertainty(const std::string& input) {
     double distance = request.value("distance", 0.0);
     if (!std::isfinite(distance) || distance < 0)
       throw std::runtime_error("Invalid working distance");
-    auto grid = distance > 0
-                    ? compute_uncertainty_at_distance(d.points, intrinsics, d.poses, warp,
-                                                     {d.width, d.height}, d.board.grid(),
-                                                     d.board.spacing, {cols, rows}, distance)
-                    : compute_uncertainty(d.points, intrinsics, d.poses, warp,
-                                          {d.width, d.height}, d.board.grid(), d.board.spacing,
-                                          {cols, rows});
+    auto grid = compute_uncertainty_at_distance(d.points, intrinsics, d.poses, warp,
+                                                {d.width, d.height}, d.board.grid(),
+                                                d.board.spacing, {cols, rows}, distance, model);
     json values = json::array();
     for (auto& p : grid) values.push_back(std::isfinite(p.z) ? json(p.z) : json(nullptr));
     return json{{"width", cols},
@@ -284,16 +286,16 @@ std::string compareModels(const std::string& input) {
     validateSize(w, h);
     auto a = j["a"]["intrinsics"].get<std::vector<double>>(),
          b = j["b"]["intrinsics"].get<std::vector<double>>();
-    if (a.size() != 12 || b.size() != 12) throw std::runtime_error("Invalid model for comparison");
-    mrcal_lensmodel_t model{};
-    model.type = MRCAL_LENSMODEL_OPENCV8;
+    auto modelA = parse_model(j["a"]), modelB = parse_model(j["b"]);
+    validate_intrinsics(modelA, a);
+    validate_intrinsics(modelB, b);
     std::vector<mrcal_point2_t> qs;
     for (int y = 0; y < rows; ++y)
       for (int x = 0; x < cols; ++x)
         qs.push_back({.x = (w - 1.) * x / (cols - 1), .y = (h - 1.) * y / (rows - 1)});
     std::vector<mrcal_point3_t> va(qs.size()), vb(qs.size());
-    mrcal_unproject(va.data(), qs.data(), qs.size(), &model, a.data());
-    mrcal_unproject(vb.data(), qs.data(), qs.size(), &model, b.data());
+    mrcal_unproject(va.data(), qs.data(), qs.size(), &modelA, a.data());
+    mrcal_unproject(vb.data(), qs.data(), qs.size(), &modelB, b.data());
     Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
     int valid = 0;
     for (size_t i = 0; i < qs.size(); ++i) {
@@ -319,7 +321,7 @@ std::string compareModels(const std::string& input) {
       Eigen::Vector3d v = rotation * Eigen::Vector3d(va[i].x, va[i].y, va[i].z);
       mrcal_point3_t p{.x = v.x(), .y = v.y(), .z = v.z()};
       mrcal_point2_t q;
-      mrcal_project(&q, nullptr, nullptr, &p, 1, &model, b.data());
+      mrcal_project(&q, nullptr, nullptr, &p, 1, &modelB, b.data());
       double error = std::hypot(q.x - qs[i].x, q.y - qs[i].y);
       if (std::isfinite(error)) {
         errors.push_back(error);
@@ -369,13 +371,30 @@ std::string undistortImage(uintptr_t source, uintptr_t dest, int w, int h,
                            const std::string& input) {
   return guarded([&] {
     validateSize(w, h);
-    auto in = json::parse(input).get<std::vector<double>>();
-    if (in.size() != 12) throw std::runtime_error("Invalid intrinsics");
-    Mat k = (Mat_<double>(3, 3) << in[0], 0, in[2], 0, in[1], in[3], 0, 0, 1),
-        dist(1, 8, CV_64F, in.data() + 4);
+    auto j = json::parse(input);
+    if (j.is_array()) j = json{{"intrinsics", j}};
+    auto model = parse_model(j);
+    auto in = j.at("intrinsics").get<std::vector<double>>();
+    validate_intrinsics(model, in);
     Mat src(h, w, CV_8UC4, reinterpret_cast<void*>(source)),
-        out(h, w, CV_8UC4, reinterpret_cast<void*>(dest));
-    cv::undistort(src, out, k, dist, k);
+        out(h, w, CV_8UC4, reinterpret_cast<void*>(dest)), mapx(h, w, CV_32F), mapy(h, w, CV_32F);
+    // Both models use the same centered pinhole output at the requested FOV.
+    const double fov = j.value("previewFov", 90.0);
+    if (!std::isfinite(fov) || fov < 10 || fov > 160)
+      throw std::runtime_error("Invalid preview FOV");
+    const double focal = w / (2 * std::tan(fov * M_PI / 360));
+    std::vector<mrcal_point3_t> rays(w);
+    std::vector<mrcal_point2_t> pixels(w);
+    for (int y = 0; y < h; ++y) {
+      for (int x = 0; x < w; ++x)
+        rays[x] = {.x = (x - (w - 1) / 2.) / focal, .y = (y - (h - 1) / 2.) / focal, .z = 1};
+      mrcal_project(pixels.data(), nullptr, nullptr, rays.data(), w, &model, in.data());
+      for (int x = 0; x < w; ++x) {
+        mapx.at<float>(y, x) = std::isfinite(pixels[x].x) ? pixels[x].x : -1;
+        mapy.at<float>(y, x) = std::isfinite(pixels[x].y) ? pixels[x].y : -1;
+      }
+    }
+    cv::remap(src, out, mapx, mapy, cv::INTER_LINEAR, cv::BORDER_CONSTANT);
     return json{{"ok", true}};
   });
 }

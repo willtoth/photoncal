@@ -47,13 +47,24 @@ function cancel() {
   busy.value = false;
   progress.value = '';
 }
-watch(result, () => {
-  cancel();
-  finite.value = undefined;
-  curve.value = [];
-  asymptote.value = undefined;
-  error.value = '';
-});
+watch(
+  result,
+  () => {
+    cancel();
+    finite.value = undefined;
+    curve.value = [];
+    asymptote.value = undefined;
+    error.value = '';
+    const p95 = percentile(
+      result.value?.uncertainty?.values.filter(
+        (v): v is number => v !== null && Number.isFinite(v),
+      ) ?? [],
+      0.95,
+    );
+    colorMax.value = Math.max(0.01, p95 ?? 0.5);
+  },
+  { immediate: true },
+);
 onBeforeUnmount(cancel);
 async function calculate(curveOnly = false) {
   if (!result.value || busy.value || props.working) return;

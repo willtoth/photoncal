@@ -6,10 +6,17 @@ import { coverage } from '../core/capture';
 import { Download, Archive, ScanLine, AlertTriangle } from 'lucide-vue-next';
 import DiagnosticPlot from './DiagnosticPlot.vue';
 import ResultsDiagnostics from './ResultsDiagnostics.vue';
+import LensModelSettings from './LensModelSettings.vue';
+import ModelComparison from './ModelComparison.vue';
+import SplineCorrection from './SplineCorrection.vue';
+import { OPENCV8, DEFAULT_SPLINE, modelName, savedFits } from '../core/lensModel';
 const CalibrationScene = defineAsyncComponent(() => import('./CalibrationScene.vue'));
 const props = defineProps<{ session: Session; working: boolean }>();
 const emit = defineEmits<{
   download: [];
+  mrcal: [];
+  model: [string];
+  both: [];
   archive: [];
   capture: [];
   consistency: [];
@@ -18,6 +25,8 @@ const emit = defineEmits<{
 }>();
 const result = computed(() => props.session.result),
   fresh = computed(() => !!currentResult(props.session));
+const compareView = ref(false);
+const fits = computed(() => savedFits(props.session));
 const mode = ref<'magnitude' | 'direction'>('magnitude');
 const c = computed(() => coverage(props.session.frames, props.session.width, props.session.height));
 const residuals = computed(() => result.value?.views.flatMap((v) => v.residuals) ?? []);
@@ -55,209 +64,300 @@ const uncertainty95 = computed(() => {
 </script>
 <template>
   <div v-if="result" class="results">
-    <div class="result-banner" :class="{ warning: issues.length }">
-      <AlertTriangle v-if="issues.length" :size="22" />
-      <div>
-        <h2>
-          {{ !fresh ? 'Results need updating' : 'Calibration complete' }}
-        </h2>
+    <section class="panel model-selector">
+      <LensModelSettings
+        :model="session.lensModel"
+        :spline="session.splineModel"
+        :disabled="working"
+        @change="
+          emit('model', $event);
+          compareView = false;
+        "
+      />
+      <div class="diagnostic-controls">
+        <button class="button" :disabled="working" @click="emit('recalibrate')">
+          Fit selected model
+        </button>
+        <button class="button" :disabled="working" @click="emit('both')">Fit both models</button>
       </div>
-      <span class="model-label">mrcal / OpenCV8</span>
-    </div>
-    <div class="metric-grid">
-      <div class="metric">
-        <span>Reprojection RMS</span><strong>{{ result.rms.toFixed(3) }} <small>px</small></strong>
-        <p>Mean {{ result.mean.toFixed(3) }} px</p>
-      </div>
-      <div class="metric">
-        <span>Observed coverage</span><strong>{{ c.percent.toFixed(0) }}<small>%</small></strong>
-        <p>{{ c.strongPercent.toFixed(0) }}% has 3+ views</p>
-      </div>
-      <div class="metric">
-        <span>Rejected corners</span><strong>{{ outlierRate.toFixed(1) }}<small>%</small></strong>
-        <p>{{ result.outliers }} of {{ result.inliers + result.outliers }}</p>
-      </div>
-      <div class="metric">
-        <span>95th percentile uncertainty</span
-        ><strong>{{ uncertainty95?.toFixed(3) ?? '—' }} <small>px</small></strong>
-        <p>Spatial p95 · at infinity · sampling standard deviation</p>
-      </div>
-    </div>
-    <section class="export-panel">
-      <div>
-        <h3>Export calibration</h3>
-        <p>
-          Use this JSON in PhotonVision with the same camera at {{ session.width }} ×
-          {{ session.height }}, with focus and zoom unchanged.
-        </p>
-        <p class="small muted">
-          JSON contains calibration parameters. The session archive also includes images and
-          diagnostics.
-        </p>
-      </div>
-      <div class="export-buttons">
-        <button class="button primary" :disabled="!fresh || working" @click="emit('download')">
-          <Download :size="18" />Download PhotonVision JSON</button
-        ><button class="button" :disabled="working" @click="emit('archive')">
-          <Archive :size="18" />Save session archive
+      <div class="diagnostic-controls" aria-label="Results view">
+        <button
+          class="button"
+          :aria-pressed="!compareView && (session.lensModel ?? OPENCV8) === OPENCV8"
+          :disabled="working"
+          @click="
+            emit('model', OPENCV8);
+            compareView = false;
+          "
+        >
+          OpenCV8
+        </button>
+        <button
+          class="button"
+          :aria-pressed="!compareView && (session.lensModel ?? OPENCV8) !== OPENCV8"
+          :disabled="working"
+          @click="
+            emit('model', session.splineModel ?? DEFAULT_SPLINE);
+            compareView = false;
+          "
+        >
+          Splined
+        </button>
+        <button
+          class="button"
+          :aria-pressed="compareView"
+          :disabled="working"
+          @click="compareView = true"
+        >
+          Compare
         </button>
       </div>
+      <p class="small muted">
+        {{ fits.length }} saved fits for the current image selection. Switching models preserves
+        each fit. A new fit uses the selected configuration.
+      </p>
     </section>
-    <div class="result-actions">
-      <button class="button" :disabled="working" @click="emit('capture')">
-        Add or review images</button
-      ><button
-        v-if="!fresh"
-        class="button primary"
-        :disabled="working"
-        @click="emit('recalibrate')"
-      >
-        Recalibrate selected images</button
-      ><a href="https://mrcal.secretsauce.net/how-to-calibrate.html" target="_blank" rel="noopener"
-        >Understanding calibration quality</a
-      >
-    </div>
-    <section class="panel">
-      <h3>Camera model</h3>
-      <dl class="model-details">
+    <ModelComparison v-if="compareView" :session="session" :working="working" />
+    <template v-else>
+      <div class="result-banner" :class="{ warning: issues.length }">
+        <AlertTriangle v-if="issues.length" :size="22" />
         <div>
-          <dt>Resolution</dt>
-          <dd>{{ session.width }} × {{ session.height }}</dd>
+          <h2>
+            {{ !fresh ? 'Results need updating' : 'Calibration complete' }}
+          </h2>
         </div>
+        <span class="model-label">mrcal / {{ modelName(result.lensModel) }}</span>
+      </div>
+      <div class="metric-grid">
+        <div class="metric">
+          <span>Reprojection RMS</span
+          ><strong>{{ result.rms.toFixed(3) }} <small>px</small></strong>
+          <p>Mean {{ result.mean.toFixed(3) }} px</p>
+        </div>
+        <div class="metric">
+          <span>Observed coverage</span><strong>{{ c.percent.toFixed(0) }}<small>%</small></strong>
+          <p>{{ c.strongPercent.toFixed(0) }}% has 3+ views</p>
+        </div>
+        <div class="metric">
+          <span>Rejected corners</span><strong>{{ outlierRate.toFixed(1) }}<small>%</small></strong>
+          <p>{{ result.outliers }} of {{ result.inliers + result.outliers }}</p>
+        </div>
+        <div class="metric">
+          <span>95th percentile uncertainty</span
+          ><strong>{{ uncertainty95?.toFixed(3) ?? '—' }} <small>px</small></strong>
+          <p>Spatial p95 · at infinity · sampling standard deviation</p>
+        </div>
+      </div>
+      <section class="export-panel">
         <div>
-          <dt>Focal lengths · fx, fy</dt>
-          <dd>
-            {{
-              result.intrinsics
-                .slice(0, 2)
-                .map((v) => v.toFixed(3))
-                .join(', ')
-            }}
-            px
-          </dd>
+          <h3>Export calibration</h3>
+          <p v-if="(result.lensModel ?? OPENCV8) === OPENCV8">
+            Use this JSON in PhotonVision with the same camera at {{ session.width }} ×
+            {{ session.height }}, with focus and zoom unchanged.
+          </p>
+          <p v-else>
+            Export this splined model for mrcal. Select an OpenCV8 fit for PhotonVision JSON.
+          </p>
+          <p class="small muted">
+            JSON contains calibration parameters. The session archive also includes images and
+            diagnostics.
+          </p>
         </div>
-        <div>
-          <dt>Optical center · cx, cy</dt>
-          <dd>
-            {{
-              result.intrinsics
-                .slice(2, 4)
-                .map((v) => v.toFixed(3))
-                .join(', ')
-            }}
-            px
-          </dd>
-        </div>
-        <div>
-          <dt>Pinhole-equivalent horizontal FOV</dt>
-          <dd>
-            {{
-              (
-                (2 * Math.atan(session.width / (2 * result.intrinsics[0]!)) * 180) /
-                Math.PI
-              ).toFixed(1)
-            }}°
-          </dd>
-        </div>
-        <div>
-          <dt>Board warp · x, y</dt>
-          <dd>{{ result.warp.map((v) => (v * 1000).toFixed(3)).join(', ') }} mm</dd>
-        </div>
-      </dl>
-      <details>
-        <summary>Distortion coefficients</summary>
-        <code class="coefficients">{{
-          result.intrinsics
-            .slice(4)
-            .map((v) => v.toPrecision(7))
-            .join(', ')
-        }}</code>
-        <p class="small muted">k₁, k₂, p₁, p₂, k₃, k₄, k₅, k₆</p>
-      </details>
-    </section>
-    <div v-if="issues.length" class="findings">
-      <p v-for="issue in issues" :key="issue"><AlertTriangle :size="16" />{{ issue }}</p>
-    </div>
-    <CalibrationScene :session="session" @inspect="emit('inspect', $event)" />
-    <div class="diagnostic-grid">
-      <section class="panel">
-        <div class="panel-heading">
-          <h3>Projection uncertainty</h3>
-          <span class="small muted">At infinity</span>
-        </div>
-        <DiagnosticPlot
-          v-if="result.uncertainty"
-          :grid="result.uncertainty"
-          :width="session.width"
-          :height="session.height"
-        />
-        <div v-else class="plot-placeholder">
-          {{ result.uncertaintyError || 'Computing uncertainty…' }}
-        </div>
-        <p class="small muted">
-          Estimated projection variation from corner-detection noise. This excludes systematic
-          errors such as board deformation or a poor lens model.
-        </p>
-      </section>
-      <section class="panel">
-        <div class="panel-heading">
-          <h3>Reprojection residuals</h3>
-          <select v-model="mode" class="compact-select" aria-label="Residual visualization">
-            <option value="magnitude">Magnitude</option>
-            <option value="direction">Direction</option>
-          </select>
-        </div>
-        <DiagnosticPlot
-          :residuals="residuals"
-          :width="session.width"
-          :height="session.height"
-          :mode="mode"
-        />
-        <p class="small muted">
-          Errors should be small and scattered. Patterns can indicate a poor lens model, a warped
-          board, motion blur, or inaccurate corner detection.
-        </p>
-      </section>
-    </div>
-    <div class="diagnostic-grid">
-      <section class="panel">
-        <div class="panel-heading">
-          <h3>Subset comparison</h3>
+        <div class="export-buttons">
           <button
-            class="button small-button"
-            :disabled="working || !fresh || session.frames.filter((f) => f.included).length < 24"
-            @click="emit('consistency')"
+            v-if="(result.lensModel ?? OPENCV8) === OPENCV8"
+            class="button primary"
+            :disabled="!fresh || working"
+            @click="emit('download')"
           >
-            <ScanLine :size="15" />{{ result.consistency ? 'Run again' : 'Run check' }}
+            <Download :size="18" />Download PhotonVision JSON</button
+          ><button class="button" :disabled="!fresh || working" @click="emit('mrcal')">
+            Download mrcal camera model</button
+          ><button class="button" :disabled="working" @click="emit('archive')">
+            <Archive :size="18" />Save session archive
           </button>
         </div>
-        <template v-if="result.consistency"
-          ><DiagnosticPlot
-            :grid="result.consistency"
+      </section>
+      <div class="result-actions">
+        <button class="button" :disabled="working" @click="emit('capture')">
+          Add or review images</button
+        ><button
+          v-if="!fresh"
+          class="button primary"
+          :disabled="working"
+          @click="emit('recalibrate')"
+        >
+          Recalibrate selected images</button
+        ><a
+          href="https://mrcal.secretsauce.net/how-to-calibrate.html"
+          target="_blank"
+          rel="noopener"
+          >Understanding calibration quality</a
+        >
+      </div>
+      <section class="panel">
+        <h3>Camera model</h3>
+        <p class="small model-identifier">
+          {{ result.lensModel ?? OPENCV8 }} · {{ result.intrinsics.length }} parameters
+        </p>
+        <dl class="model-details">
+          <div>
+            <dt>Resolution</dt>
+            <dd>{{ session.width }} × {{ session.height }}</dd>
+          </div>
+          <div>
+            <dt>
+              {{
+                (result.lensModel ?? OPENCV8) === OPENCV8 ? 'Focal lengths' : 'Projection core'
+              }}
+              · fx, fy
+            </dt>
+            <dd>
+              {{
+                result.intrinsics
+                  .slice(0, 2)
+                  .map((v) => v.toFixed(3))
+                  .join(', ')
+              }}
+              px
+            </dd>
+          </div>
+          <div>
+            <dt>Optical center · cx, cy</dt>
+            <dd>
+              {{
+                result.intrinsics
+                  .slice(2, 4)
+                  .map((v) => v.toFixed(3))
+                  .join(', ')
+              }}
+              px
+            </dd>
+          </div>
+          <div>
+            <dt>
+              {{
+                result.modelGeometry?.horizontalFov
+                  ? 'Calibrated horizontal FOV'
+                  : 'Pinhole-equivalent horizontal FOV'
+              }}
+            </dt>
+            <dd>
+              {{
+                (
+                  result.modelGeometry?.horizontalFov ??
+                  (2 * Math.atan(session.width / (2 * result.intrinsics[0]!)) * 180) / Math.PI
+                ).toFixed(1)
+              }}°
+            </dd>
+          </div>
+          <div>
+            <dt>Board warp · x, y</dt>
+            <dd>{{ result.warp.map((v) => (v * 1000).toFixed(3)).join(', ') }} mm</dd>
+          </div>
+        </dl>
+        <details v-if="(result.lensModel ?? OPENCV8) === OPENCV8">
+          <summary>Distortion coefficients</summary>
+          <code class="coefficients">{{
+            result.intrinsics
+              .slice(4)
+              .map((v) => v.toPrecision(7))
+              .join(', ')
+          }}</code>
+          <p class="small muted">k₁, k₂, p₁, p₂, k₃, k₄, k₅, k₆</p>
+        </details>
+      </section>
+      <div v-if="issues.length" class="findings">
+        <p v-for="issue in issues" :key="issue"><AlertTriangle :size="16" />{{ issue }}</p>
+      </div>
+      <SplineCorrection :session="session" />
+      <CalibrationScene :session="session" @inspect="emit('inspect', $event)" />
+      <div class="diagnostic-grid">
+        <section class="panel">
+          <div class="panel-heading">
+            <h3>Projection uncertainty</h3>
+            <span class="small muted">At infinity</span>
+          </div>
+          <DiagnosticPlot
+            v-if="result.uncertainty"
+            :grid="result.uncertainty"
             :width="session.width"
             :height="session.height"
           />
-          <p class="small">
-            Mean difference {{ result.consistency.mean.toFixed(3) }} px · 95th percentile
-            {{ result.consistency.p95.toFixed(3) }} px
-          </p></template
-        >
-        <p v-else class="muted">
-          Calibrate two sets of alternating images and compare their projections. Requires at least
-          24 images, varied angles and coverage in each set, and two extra solves.
-        </p>
-        <p v-if="result.consistencyError" class="error-text">{{ result.consistencyError }}</p>
-        <p class="small muted">
-          Both sets can share the same systematic error, even when their results agree.
-        </p>
-      </section>
-    </div>
+          <div v-else class="plot-placeholder">
+            {{ result.uncertaintyError || 'Computing uncertainty…' }}
+          </div>
+          <p class="small muted">
+            Estimated projection variation from corner-detection noise. This excludes systematic
+            errors such as board deformation or a poor lens model.
+          </p>
+        </section>
+        <section class="panel">
+          <div class="panel-heading">
+            <h3>Reprojection residuals</h3>
+            <select v-model="mode" class="compact-select" aria-label="Residual visualization">
+              <option value="magnitude">Magnitude</option>
+              <option value="direction">Direction</option>
+            </select>
+          </div>
+          <DiagnosticPlot
+            :residuals="residuals"
+            :width="session.width"
+            :height="session.height"
+            :mode="mode"
+          />
+          <p class="small muted">
+            Errors should be small and scattered. Patterns can indicate a poor lens model, a warped
+            board, motion blur, or inaccurate corner detection.
+          </p>
+        </section>
+      </div>
+      <div class="diagnostic-grid">
+        <section class="panel">
+          <div class="panel-heading">
+            <h3>Subset comparison</h3>
+            <button
+              class="button small-button"
+              :disabled="working || !fresh || session.frames.filter((f) => f.included).length < 24"
+              @click="emit('consistency')"
+            >
+              <ScanLine :size="15" />{{ result.consistency ? 'Run again' : 'Run check' }}
+            </button>
+          </div>
+          <template v-if="result.consistency"
+            ><DiagnosticPlot
+              :grid="result.consistency"
+              :width="session.width"
+              :height="session.height"
+            />
+            <p class="small">
+              Mean difference {{ result.consistency.mean.toFixed(3) }} px · 95th percentile
+              {{ result.consistency.p95.toFixed(3) }} px
+            </p></template
+          >
+          <p v-else class="muted">
+            Calibrate two sets of alternating images and compare their projections. Requires at
+            least 24 images, varied angles and coverage in each set, and two extra solves.
+          </p>
+          <p v-if="result.consistencyError" class="error-text">{{ result.consistencyError }}</p>
+          <p class="small muted">
+            Both sets can share the same systematic error, even when their results agree.
+          </p>
+        </section>
+      </div>
 
-    <ResultsDiagnostics
-      v-if="fresh"
-      :session="session"
-      :working="working"
-      @inspect="emit('inspect', $event)"
-    />
+      <ResultsDiagnostics
+        v-if="fresh"
+        :session="session"
+        :working="working"
+        @inspect="emit('inspect', $event)"
+      />
+    </template>
   </div>
 </template>
+
+<style scoped>
+.model-identifier {
+  overflow-wrap: anywhere;
+}
+</style>

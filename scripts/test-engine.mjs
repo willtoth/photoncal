@@ -140,6 +140,88 @@ const diff = wasm('compare', {
 });
 assert(diff.mean < 1 && diff.p95 < 3, 'Independent synthetic fits disagree');
 console.log(`Independent-subset comparison passed: mean difference ${diff.mean.toFixed(3)} px`);
+// Independent stereographic projection plus smooth asymmetric polynomial corrections.
+// Cubic splines can represent these local surfaces; no mrcal projection generates the observations.
+const splineData = syntheticDataset(80, true, (x, y, z) => {
+  const n = Math.hypot(x, y, z),
+    u = (2 * x) / (n + z),
+    v = (2 * y) / (n + z);
+  return [
+    820 * (u + 0.025 * u * v + 0.012 * u * u * u) + 639.5,
+    825 * (v + 0.018 * u * u - 0.015 * u * v * v) + 359.5,
+  ];
+}).request;
+for (const order of [2, 3]) {
+  const request = {
+    ...splineData,
+    lensModel: `LENSMODEL_SPLINED_STEREOGRAPHIC_order=${order}_Nx=12_Ny=8_fov_x_deg=120`,
+  };
+  const fit = wasm('solve', request),
+    reference = native('solve', request);
+  assert.equal(fit.lensModel, request.lensModel);
+  assert.equal(fit.intrinsics.length, 196);
+  assert(fit.rms < 0.25, `Spline RMS ${fit.rms}`);
+  assert(Math.abs(fit.rms - reference.rms) < 1e-5);
+  assert.equal(fit.modelGeometry.boundaryRays.length, 64);
+  assert.equal(fit.modelGeometry.knots.length, 96);
+  assert(
+    fit.modelGeometry.correction.values.every((v) => v === null || (Number.isFinite(v) && v >= 0)),
+  );
+  const inf = wasm('uncertainty', { ...request, result: fit, gridWidth: 6, gridHeight: 4 });
+  for (const distance of [0, 0.5, 3, 1e8]) {
+    const input = { ...request, result: fit, distance, gridWidth: 6, gridHeight: 4 };
+    const u = wasm('uncertainty', input),
+      n = native('uncertainty', input);
+    u.values.forEach((v, i) => {
+      assert(Number.isFinite(v) && v >= 0, 'Invalid spline uncertainty');
+      assert(Math.abs(v - n.values[i]) < 0.001, 'Spline native/WASM uncertainty differs');
+      if (distance === 1e8)
+        assert(Math.abs(v - inf.values[i]) < 1e-5, 'Spline finite limit differs');
+    });
+  }
+  assert(
+    wasm('compare', { width: request.width, height: request.height, a: fit, b: fit }).p95 < 1e-4,
+  );
+  const opencv = wasm('solve', { ...request, lensModel: 'LENSMODEL_OPENCV8' });
+  const difference = wasm('compare', {
+    width: request.width,
+    height: request.height,
+    a: opencv,
+    b: fit,
+  });
+  assert(difference.p95 > 0.01 && Number.isFinite(difference.p95));
+  if (order === 3) {
+    const halves = [0, 1].map((parity) => ({
+      ...request,
+      frames: request.frames.filter((_, i) => i % 2 === parity),
+    }));
+    const fits = halves.map((input) => {
+      const result = wasm('solve', input);
+      return { ...result, uncertainty: wasm('uncertainty', { ...input, result }) };
+    });
+    const subset = wasm('compare', {
+      width: request.width,
+      height: request.height,
+      a: fits[0],
+      b: fits[1],
+      ua: fits[0].uncertainty.values,
+      ub: fits[1].uncertainty.values,
+    });
+    assert(Number.isFinite(subset.p95) && subset.p95 < 5, 'Independent spline subsets disagree');
+  }
+  await writeFile(
+    path.join(root, `.build/test/spline-${order}.json`),
+    JSON.stringify({ request, result: fit }),
+  );
+  console.log(
+    `Spline order ${order}: independent synthetic RMS ${fit.rms.toFixed(4)}; native/WASM, finite range, geometry and comparison passed`,
+  );
+}
+for (const lensModel of [
+  'garbage',
+  'LENSMODEL_SPLINED_STEREOGRAPHIC_order=3_Nx=99_Ny=8_fov_x_deg=120',
+])
+  assert(JSON.parse(engine.solve(JSON.stringify({ ...splineData, lensModel }))).error);
 if (process.argv.includes('--large')) {
   const { request } = syntheticDataset(300, true),
     start = performance.now();

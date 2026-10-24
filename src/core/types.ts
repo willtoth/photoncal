@@ -1,3 +1,4 @@
+import { OPENCV8 } from './lensModel';
 export interface BoardConfig {
   kind: 'charuco' | 'chessboard';
   columns: number;
@@ -57,7 +58,17 @@ export interface Grid {
   height: number;
   values: (number | null)[];
 }
+export interface ModelGeometry {
+  boundaryRays: ([number, number, number] | null)[];
+  horizontalFov?: number;
+  correction?: Grid;
+  splineInBounds?: boolean[];
+  knots?: ([number, number] | null)[];
+  correctionVectors?: { x: number; y: number; dx: number; dy: number }[];
+}
 export interface CalibrationResult {
+  lensModel?: string;
+  modelGeometry?: ModelGeometry;
   intrinsics: number[];
   warp: number[];
   poses: number[][];
@@ -91,8 +102,12 @@ export interface Session {
   revision: number;
   resultRevision?: number;
   result?: CalibrationResult;
+  lensModel?: string;
+  splineModel?: string;
+  modelFits?: { revision: number; result: CalibrationResult }[];
 }
 export interface SolveRequest {
+  lensModel?: string;
   board: BoardConfig;
   width: number;
   height: number;
@@ -129,6 +144,7 @@ export function newSession(): Session {
 }
 export function solveRequest(session: Session): SolveRequest {
   return {
+    lensModel: session.lensModel ?? OPENCV8,
     board: { ...session.board },
     width: session.width,
     height: session.height,
@@ -139,5 +155,9 @@ export function solveRequest(session: Session): SolveRequest {
   };
 }
 export function currentResult(s: Session) {
-  return s.result && s.revision === s.resultRevision ? s.result : undefined;
+  return s.result &&
+    s.revision === s.resultRevision &&
+    (s.result.lensModel ?? OPENCV8) === (s.lensModel ?? OPENCV8)
+    ? s.result
+    : undefined;
 }

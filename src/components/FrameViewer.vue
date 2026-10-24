@@ -29,6 +29,8 @@ async function compare() {
     const output = await engine.call<Blob>('undistort', {
       blob,
       intrinsics: [...props.session.result.intrinsics],
+      lensModel: props.session.result.lensModel,
+      previewFov: 90,
     });
     if (!disposed) {
       corrected.value = URL.createObjectURL(output);
@@ -64,8 +66,8 @@ onUnmounted(() => {
         <div>
           <h3>{{ frame?.name }}</h3>
           <p class="small muted">
-            {{ showCorrected ? 'Undistorted preview' : 'Original capture' }} · {{ session.width }} ×
-            {{ session.height
+            {{ showCorrected ? 'Undistorted · 90° pinhole preview' : 'Original capture' }} ·
+            {{ session.width }} × {{ session.height
             }}<template v-if="view"> · {{ view.mean.toFixed(3) }} px mean error</template>
           </p>
         </div>
